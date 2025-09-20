@@ -1,5 +1,4 @@
 using Hartsy.Extensions.MagicPromptExtension.WebAPI;
-using Hartsy.Extensions.MagicPromptExtension.WebAPI.Models;
 using SwarmUI.Core;
 using SwarmUI.Utils;
 using SwarmUI.Text2Image;
@@ -14,6 +13,7 @@ public class MagicPromptExtension : Extension
     /// Storing as a single volatile reference ensures readers see a consistent pair.
     /// </summary>
     private sealed record CacheSnapshot(string NormalizedPrompt, string LlmPrompt);
+
     private static volatile CacheSnapshot _cacheSnapshot;
     private static readonly object CacheLock = new();
     private static T2IRegisteredParam<bool> _paramAutoEnable;
@@ -44,24 +44,33 @@ public class MagicPromptExtension : Extension
 
     private static void AddT2IParameters()
     {
-        var paramGroup = new T2IParamGroup("Magic Prompt", Toggles: true, Open: false, OrderPriority: 9);
+        var paramGroup = new T2IParamGroup(
+            Name: "Magic Prompt",
+            Toggles: true,
+            Open: false,
+            OrderPriority: 9
+        );
         _paramAutoEnable = T2IParamTypes.Register<bool>(new T2IParamType(
             Name: "MP Auto Enable",
-            Description: "Automatically use Magic Prompt to rewrite your prompt before generation.",
+            Description: "Automatically use Magic Prompt to rewrite your prompt " +
+                         "before generation.",
             Default: "false",
             Group: paramGroup,
             OrderPriority: 1
         ));
         _paramUseCache = T2IParamTypes.Register<bool>(new T2IParamType(
             Name: "MP Use Cache",
-            Description: "Cache LLM results for static prompts to avoid repeated requests to LLM.",
+            Description: "Cache LLM results for static prompts to avoid repeated " +
+                         "requests to LLM.",
             Default: "true",
             Group: paramGroup,
             OrderPriority: 2
         ));
         T2IParamTypes.Register<bool>(new T2IParamType(
             Name: "MP Generate Wildcard Seed",
-            Description: "Every time you press Generate, a new Wildcard Seed is generated. This is extremely useful for batching images, so they can reuse cached LLM responses.",
+            Description: "Every time you press Generate, a new Wildcard Seed is " +
+                         "generated. This is extremely useful for batching images, " +
+                         "so they can reuse cached LLM responses.",
             Default: "false",
             Group: paramGroup,
             OrderPriority: 3
@@ -69,8 +78,8 @@ public class MagicPromptExtension : Extension
         _paramModelId = T2IParamTypes.Register<string>(new T2IParamType(
             Name: "MP Model ID",
             Description: "Select an LLM to use for this batch",
-            Default:"loading",
-            GetValues: (_) => ["loading///loading"],
+            Default: "loading",
+            GetValues: _ => ["loading///loading"],
             IgnoreIf: "loading",
             Group: paramGroup,
             OrderPriority: 4,
@@ -79,8 +88,8 @@ public class MagicPromptExtension : Extension
         _paramInstructions = T2IParamTypes.Register<string>(new T2IParamType(
             Name: "MP Instructions",
             Description: "Select a prompt to use for this batch",
-            Default:"loading",
-            GetValues: (_) => ["loading///loading"],
+            Default: "loading",
+            GetValues: _ => ["loading///loading"],
             IgnoreIf: "loading",
             Group: paramGroup,
             OrderPriority: 5,
@@ -117,7 +126,8 @@ public class MagicPromptExtension : Extension
                 return;
             }
 
-            // Parse the prompt to handle regional tags, segments, etc, and only send the core text to the LLM
+            // Parse the prompt to handle regional tags, segments, etc, and only
+            // send the core text to the LLM
             var promptRegions = new PromptRegion(prompt);
             var parsedPrompt = string.IsNullOrWhiteSpace(promptRegions.GlobalPrompt)
                 ? prompt
@@ -134,14 +144,19 @@ public class MagicPromptExtension : Extension
 
                 var llmResponse = useCache
                     ? HandleCacheableRequest(parsedPrompt, userInput)
-                    // Use Cache is disabled: proceed with normal behavior (no cache coordination needed)
+                    // Use Cache is disabled: proceed with normal behavior
+                    // (no cache coordination needed)
                     : MakeLlmRequest(parsedPrompt, userInput);
 
                 // No response from LLM, fallback to original prompt
                 if (string.IsNullOrEmpty(llmResponse)) return;
 
-                // Remove the core text that was sent to the LLM from the original prompt, leaving only regional tags/parts
-                if (!userInput.InternalSet.Get(_paramAppendOriginal) && !string.IsNullOrWhiteSpace(promptRegions.GlobalPrompt))
+                // Remove the core text that was sent to the LLM from the original
+                // prompt, leaving only regional tags/parts
+                if (
+                    !userInput.InternalSet.Get(_paramAppendOriginal)
+                    && !string.IsNullOrWhiteSpace(promptRegions.GlobalPrompt)
+                )
                 {
                     prompt = prompt.Replace(promptRegions.GlobalPrompt, string.Empty);
                 }
@@ -160,16 +175,18 @@ public class MagicPromptExtension : Extension
         });
     }
 
-    private static string HandleCacheableRequest(string prompt,  T2IParamInput userInput)
+    private static string HandleCacheableRequest(string prompt, T2IParamInput userInput)
     {
-        var normalizedPrompt = string.IsNullOrWhiteSpace(prompt) 
-            ? string.Empty 
+        var normalizedPrompt = string.IsNullOrWhiteSpace(prompt)
+            ? string.Empty
             : new string(prompt.Trim().ToLowerInvariant().Where(c => !char.IsWhiteSpace(c)).ToArray());
 
         // Fast path: double-checked locking
         // 1) Check outside the lock to avoid serializing the common case (cache hits).
-        // 2) Acquire the lock and check again to avoid a race if another thread populated the cache meanwhile.
-        // Note: Checking only once inside the lock would be correct but increases contention and latency under concurrency.
+        // 2) Acquire the lock and check again to avoid a race if another thread
+        //    populated the cache meanwhile.
+        // Note: Checking only once inside the lock would be correct but increases
+        // contention and latency under concurrency.
         var cachedPrompt = CheckCache(normalizedPrompt);
         if (!string.IsNullOrEmpty(cachedPrompt))
         {
@@ -177,11 +194,13 @@ public class MagicPromptExtension : Extension
             return cachedPrompt;
         }
 
-        // Single-lock synchronization to avoid duplicate LLM calls for the same prompt in parallel
+        // Single-lock synchronization to avoid duplicate LLM calls for the same
+        // prompt in parallel
         lock (CacheLock)
         {
             cachedPrompt = CheckCache(normalizedPrompt);
-            // Double-check cache under the lock in case another thread populated it meanwhile
+            // Double-check cache under the lock in case another thread populated
+            // it meanwhile
             if (!string.IsNullOrEmpty(cachedPrompt))
             {
                 Logs.Debug("MagicPrompt: cache hit (post-lock) for static-tag prompt.");
@@ -190,13 +209,14 @@ public class MagicPromptExtension : Extension
 
             try
             {
-                var llmResponse = MakeLlmRequest(prompt, userInput);
-                if (!string.IsNullOrEmpty(llmResponse))
+                var llmPrompt = MakeLlmRequest(prompt, userInput);
+                if (!string.IsNullOrEmpty(llmPrompt))
                 {
-                    // Atomically swap the cache snapshot so readers observe a consistent pair
-                    _cacheSnapshot = new CacheSnapshot(normalizedPrompt, llmResponse);
+                    // Atomically swap the cache snapshot so readers observe a
+                    // consistent pair
+                    _cacheSnapshot = new CacheSnapshot(normalizedPrompt, llmPrompt);
 
-                    return llmResponse;
+                    return llmPrompt;
                 }
             }
             catch (Exception ex)
@@ -212,8 +232,16 @@ public class MagicPromptExtension : Extension
     {
         // Atomic snapshot read of the last cache entry
         var snapshot = _cacheSnapshot;
-        if (snapshot is null) return null;
-        if (!string.Equals(snapshot.NormalizedPrompt, normalizedPrompt, StringComparison.Ordinal)) return null;
+        if (snapshot is null)
+        {
+            return null;
+        };
+
+        if (!string.Equals(snapshot.NormalizedPrompt, normalizedPrompt, StringComparison.Ordinal))
+        {
+            return null;
+        };
+
         return string.IsNullOrEmpty(snapshot.LlmPrompt) ? null : snapshot.LlmPrompt;
     }
 
@@ -225,26 +253,24 @@ public class MagicPromptExtension : Extension
         }
     }
 
-    private static string MakeLlmRequest(string prompt,  T2IParamInput userInput)
+    private static string MakeLlmRequest(string prompt, T2IParamInput userInput)
     {
-        var modelId = userInput.InternalSet.Get(_paramModelId);
-        var instructions = userInput.InternalSet.Get(_paramInstructions);
-
-        JObject request = new()
+        var request = new JObject
         {
             ["messageContent"] = new JObject
             {
                 ["text"] = prompt,
-                // Leave instructions empty to let server-side default logic choose based on action
-                ["instructions"] = instructions
+                ["instructions"] = ResolveInstructions(userInput.InternalSet.Get(_paramInstructions))
             },
-            ["modelId"] = modelId ?? string.Empty,
+            ["modelId"] = userInput.InternalSet.Get(_paramModelId, defVal: string.Empty),
             ["messageType"] = "Text",
             ["action"] = "prompt",
             ["session_id"] = userInput.SourceSession?.ID ?? string.Empty
         };
 
-        var resp = LLMAPICalls.MagicPromptPhoneHome(request, userInput.SourceSession).GetAwaiter().GetResult();
+        var resp = LLMAPICalls.MagicPromptPhoneHome(request, userInput.SourceSession)
+            .GetAwaiter()
+            .GetResult();
 
         if (!(bool)resp?["success"])
         {
@@ -254,5 +280,39 @@ public class MagicPromptExtension : Extension
         var llmResponse = resp?["response"]?.ToString();
         return string.IsNullOrWhiteSpace(llmResponse) ? null : llmResponse;
     }
-}
 
+    private static string ResolveInstructions(string instructions)
+    {
+        var sessionSettings = SessionSettings.GetMagicPromptSettings()
+            .GetAwaiter()
+            .GetResult();
+        if (!sessionSettings["success"]!.Value<bool>())
+        {
+            return instructions;
+        }
+
+        var settings = sessionSettings!["settings"];
+        if (settings == null)
+        {
+            return instructions;
+        }
+
+        var instructionsObj = settings!["instructions"];
+        if (instructionsObj == null)
+        {
+            return instructions;
+        }
+
+        if (string.IsNullOrWhiteSpace(instructions))
+        {
+            return instructionsObj["prompt"]?.ToString();
+        }
+
+        // instructions currently holds the selected key
+        var resolved = instructionsObj[instructions]?.ToString();
+
+        return string.IsNullOrWhiteSpace(resolved)
+            ? instructionsObj["prompt"]?.ToString()
+            : resolved;
+    }
+}
