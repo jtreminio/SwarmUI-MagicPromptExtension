@@ -1,4 +1,5 @@
 using Hartsy.Extensions.MagicPromptExtension.WebAPI;
+using Hartsy.Extensions.MagicPromptExtension.WebAPI.Models;
 using SwarmUI.Core;
 using SwarmUI.Utils;
 using SwarmUI.Text2Image;
@@ -16,8 +17,10 @@ public class MagicPromptExtension : Extension
     private static volatile CacheSnapshot _cacheSnapshot;
     private static readonly object CacheLock = new();
     private static T2IRegisteredParam<bool> _paramAutoEnable;
-    private static T2IRegisteredParam<bool> _paramAppendOriginal;
     private static T2IRegisteredParam<bool> _paramUseCache;
+    private static T2IRegisteredParam<string> _paramModelId;
+    private static T2IRegisteredParam<string> _paramInstructions;
+    private static T2IRegisteredParam<bool> _paramAppendOriginal;
 
     public override void OnPreInit()
     {
@@ -63,12 +66,32 @@ public class MagicPromptExtension : Extension
             Group: paramGroup,
             OrderPriority: 3
         ));
+        _paramModelId = T2IParamTypes.Register<string>(new T2IParamType(
+            Name: "MP Model ID",
+            Description: "Select an LLM to use for this batch",
+            Default:"loading",
+            GetValues: (_) => ["loading///loading"],
+            IgnoreIf: "loading",
+            Group: paramGroup,
+            OrderPriority: 4,
+            ValidateValues: false
+        ));
+        _paramInstructions = T2IParamTypes.Register<string>(new T2IParamType(
+            Name: "MP Instructions",
+            Description: "Select a prompt to use for this batch",
+            Default:"loading",
+            GetValues: (_) => ["loading///loading"],
+            IgnoreIf: "loading",
+            Group: paramGroup,
+            OrderPriority: 5,
+            ValidateValues: false
+        ));
         _paramAppendOriginal = T2IParamTypes.Register<bool>(new T2IParamType(
             Name: "MP Append Original Prompt",
             Description: "Append the original prompt after the generated LLM prompt.",
             Default: "false",
             Group: paramGroup,
-            OrderPriority: 4
+            OrderPriority: 6
         ));
 
         T2IParamInput.LateSpecialParameterHandlers.Add(userInput =>
@@ -96,7 +119,7 @@ public class MagicPromptExtension : Extension
 
             // Parse the prompt to handle regional tags, segments, etc, and only send the core text to the LLM
             var promptRegions = new PromptRegion(prompt);
-            var llmInputPrompt = string.IsNullOrWhiteSpace(promptRegions.GlobalPrompt)
+            var parsedPrompt = string.IsNullOrWhiteSpace(promptRegions.GlobalPrompt)
                 ? prompt
                 : promptRegions.GlobalPrompt;
 
@@ -110,9 +133,9 @@ public class MagicPromptExtension : Extension
                 }
 
                 var llmResponse = useCache
-                    ? HandleCacheableRequest(llmInputPrompt, userInput)
+                    ? HandleCacheableRequest(parsedPrompt, userInput)
                     // Use Cache is disabled: proceed with normal behavior (no cache coordination needed)
-                    : MakeLlmRequest(llmInputPrompt, userInput);
+                    : MakeLlmRequest(parsedPrompt, userInput);
 
                 // No response from LLM, fallback to original prompt
                 if (string.IsNullOrEmpty(llmResponse)) return;
@@ -120,7 +143,7 @@ public class MagicPromptExtension : Extension
                 // Remove the core text that was sent to the LLM from the original prompt, leaving only regional tags/parts
                 if (!userInput.InternalSet.Get(_paramAppendOriginal) && !string.IsNullOrWhiteSpace(promptRegions.GlobalPrompt))
                 {
-                    prompt = prompt?.Replace(promptRegions.GlobalPrompt, string.Empty);
+                    prompt = prompt.Replace(promptRegions.GlobalPrompt, string.Empty);
                 }
 
                 if (!string.IsNullOrEmpty(prompt))
@@ -204,18 +227,8 @@ public class MagicPromptExtension : Extension
 
     private static string MakeLlmRequest(string prompt,  T2IParamInput userInput)
     {
-        // Build request for MagicPromptPhoneHome including required fields
-        string modelId = null;
-        try
-        {
-            var settingsResp = SessionSettings.GetMagicPromptSettings().GetAwaiter().GetResult();
-            if (settingsResp != null && settingsResp["success"]?.Value<bool>() == true)
-            {
-                var settings = settingsResp["settings"] as JObject;
-                modelId = settings?["model"]?.ToString();
-            }
-        }
-        catch { /* ignore and leave modelId null */ }
+        var modelId = userInput.InternalSet.Get(_paramModelId);
+        var instructions = userInput.InternalSet.Get(_paramInstructions);
 
         JObject request = new()
         {
@@ -223,7 +236,7 @@ public class MagicPromptExtension : Extension
             {
                 ["text"] = prompt,
                 // Leave instructions empty to let server-side default logic choose based on action
-                ["instructions"] = ""
+                ["instructions"] = instructions
             },
             ["modelId"] = modelId ?? string.Empty,
             ["messageType"] = "Text",
@@ -232,8 +245,13 @@ public class MagicPromptExtension : Extension
         };
 
         var resp = LLMAPICalls.MagicPromptPhoneHome(request, userInput.SourceSession).GetAwaiter().GetResult();
-        var llmResponse = resp?["response"]?.ToString();
 
+        if (!(bool)resp?["success"])
+        {
+            return null;
+        }
+
+        var llmResponse = resp?["response"]?.ToString();
         return string.IsNullOrWhiteSpace(llmResponse) ? null : llmResponse;
     }
 }
