@@ -418,7 +418,6 @@ async function fetchModels() {
     // Clear semaphore
     MP.fetchingModels = false;
     MP.fetchingModelsPromise = null;
-    updateModelListOnLeft();
   }
 }
 
@@ -426,8 +425,8 @@ function updateModelListOnLeft() {
   try {
     const modelSelect = document.getElementById('modelSelect');
     const enhanceInstructions = getInstructionsForCategory('prompt');
-    const listOfModels = document.querySelector('[data-param_id="mpmodelid"]');
-    const listOfInstructions = document.querySelector('[data-param_id="mpinstructions"]');
+    const listOfModels = document.getElementById('input_mpmodelid');
+    const listOfInstructions = document.getElementById('input_mpinstructions');
 
     if (!modelSelect || !listOfModels || !listOfInstructions) {
       console.warn('Could not sync MP List of Models: source or destination select not found');

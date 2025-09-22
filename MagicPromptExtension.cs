@@ -3,6 +3,7 @@ using SwarmUI.Core;
 using SwarmUI.Utils;
 using SwarmUI.Text2Image;
 using Newtonsoft.Json.Linq;
+using SwarmUI.Accounts;
 
 namespace Hartsy.Extensions.MagicPromptExtension;
 
@@ -16,6 +17,13 @@ public class MagicPromptExtension : Extension
 
     private static volatile CacheSnapshot _cacheSnapshot;
     private static readonly object CacheLock = new();
+
+    // Cache for models/settings response to avoid duplicate API calls between GetValues lambdas
+    private static readonly object ModelsCacheLock = new();
+    private static JObject _modelsCacheResponse;
+    private static DateTime _modelsCacheTimeUtc;
+    private static readonly TimeSpan ModelsCacheTtl = TimeSpan.FromSeconds(10);
+
     private static T2IRegisteredParam<bool> _paramAutoEnable;
     private static T2IRegisteredParam<bool> _paramUseCache;
     private static T2IRegisteredParam<string> _paramModelId;
@@ -79,21 +87,21 @@ public class MagicPromptExtension : Extension
             Name: "MP Model ID",
             Description: "Select an LLM to use for this batch",
             Default: "loading",
-            GetValues: _ => ["loading///loading"],
             IgnoreIf: "loading",
             Group: paramGroup,
             OrderPriority: 4,
-            ValidateValues: false
+            ValidateValues: false,
+            GetValues: GetModelList
         ));
         _paramInstructions = T2IParamTypes.Register<string>(new T2IParamType(
             Name: "MP Instructions",
             Description: "Select a prompt to use for this batch",
             Default: "loading",
-            GetValues: _ => ["loading///loading"],
             IgnoreIf: "loading",
             Group: paramGroup,
             OrderPriority: 5,
-            ValidateValues: false
+            ValidateValues: false,
+            GetValues: GetInstructionList
         ));
         _paramAppendOriginal = T2IParamTypes.Register<bool>(new T2IParamType(
             Name: "MP Append Original Prompt",
@@ -314,5 +322,105 @@ public class MagicPromptExtension : Extension
         return string.IsNullOrWhiteSpace(resolved)
             ? instructionsObj["prompt"]?.ToString()
             : resolved;
+    }
+
+    private static List<string> GetModelList(Session session)
+    {
+
+        var defaultResponse = new List<string>{"loading///loading"};
+
+        try
+        {
+            var response = GetModelsResponseCached(session);
+            if (response?["success"]?.Value<bool>() != true)
+            {
+                return defaultResponse;
+            }
+
+            var models = response["models"] as JArray;
+            if (models == null || models.Count == 0)
+            {
+                return defaultResponse;
+            }
+
+            var list = new List<string>(models.Count);
+            foreach (var m in models)
+            {
+                var modelId = m?["model"]?.ToString();
+                var name = m?["name"]?.ToString();
+                if (string.IsNullOrWhiteSpace(modelId)) continue;
+                if (string.IsNullOrWhiteSpace(name)) name = modelId;
+                list.Add($"{modelId}///{name}");
+            }
+
+            return list.Count > 0 ? list : defaultResponse;
+        }
+        catch
+        {
+            return defaultResponse;
+        }
+    }
+
+    private static List<string> GetInstructionList(Session session)
+    {
+
+        var defaultResponse = new List<string>{"loading///loading"};
+
+        try
+        {
+            var list = new List<string>();
+            var response = GetModelsResponseCached(session);
+            var settings = response?["settings"] as JObject;
+            var instructions = settings?["instructions"] as JObject;
+
+            var chat = instructions?["chat"]?.ToString();
+            if (!string.IsNullOrWhiteSpace(chat))
+            {
+                list.Add($"prompt///Enhance Prompt (Default)");
+            }
+
+            var custom = instructions?["custom"] as JObject;
+            if (custom != null)
+            {
+                foreach (var prop in custom.Properties())
+                {
+                    var title = prop.Value?["title"]?.ToString();
+                    if (!string.IsNullOrEmpty(title))
+                    {
+                        list.Add($"{prop.Name}///{title}");
+                    }
+                }
+            }
+
+            return list.Count > 0 ? list : defaultResponse;
+        }
+        catch
+        {
+            return defaultResponse;
+        }
+    }
+
+    private static JObject GetModelsResponseCached(Session session)
+    {
+        // Serve from cache if fresh
+        lock (ModelsCacheLock)
+        {
+            if (_modelsCacheResponse != null && (DateTime.UtcNow - _modelsCacheTimeUtc) < ModelsCacheTtl)
+            {
+                return _modelsCacheResponse;
+            }
+        }
+
+        var resp = LLMAPICalls.GetMagicPromptModels(session)
+            .GetAwaiter()
+            .GetResult();
+
+        lock (ModelsCacheLock)
+        {
+            _modelsCacheResponse = resp;
+            _modelsCacheTimeUtc = DateTime.UtcNow;
+        }
+
+        return resp;
     }
 }
