@@ -24,11 +24,9 @@ public class MagicPromptExtension : Extension
     private static DateTime _modelsCacheTimeUtc;
     private static readonly TimeSpan ModelsCacheTtl = TimeSpan.FromSeconds(10);
 
-    private static T2IRegisteredParam<bool> _paramAutoEnable;
     private static T2IRegisteredParam<bool> _paramUseCache;
     private static T2IRegisteredParam<string> _paramModelId;
     private static T2IRegisteredParam<string> _paramInstructions;
-    private static T2IRegisteredParam<bool> _paramAppendOriginal;
 
     public override void OnPreInit()
     {
@@ -53,26 +51,20 @@ public class MagicPromptExtension : Extension
     private static void AddT2IParameters()
     {
         var paramGroup = new T2IParamGroup(
-            Name: "Magic Prompt",
+            Name: "Magic Prompt Auto Enable",
+            Description: "Automatically use Magic Prompt to rewrite your prompt " +
+                         "before generation.",
             Toggles: true,
             Open: false,
             OrderPriority: 9
         );
-        _paramAutoEnable = T2IParamTypes.Register<bool>(new T2IParamType(
-            Name: "MP Auto Enable",
-            Description: "Automatically use Magic Prompt to rewrite your prompt " +
-                         "before generation.",
-            Default: "false",
-            Group: paramGroup,
-            OrderPriority: 1
-        ));
         _paramUseCache = T2IParamTypes.Register<bool>(new T2IParamType(
             Name: "MP Use Cache",
             Description: "Cache LLM results for static prompts to avoid repeated " +
                          "requests to LLM.",
             Default: "true",
             Group: paramGroup,
-            OrderPriority: 2
+            OrderPriority: 1
         ));
         T2IParamTypes.Register<bool>(new T2IParamType(
             Name: "MP Generate Wildcard Seed",
@@ -81,7 +73,7 @@ public class MagicPromptExtension : Extension
                          "so they can reuse cached LLM responses.",
             Default: "false",
             Group: paramGroup,
-            OrderPriority: 3
+            OrderPriority: 2
         ));
         _paramModelId = T2IParamTypes.Register<string>(new T2IParamType(
             Name: "MP Model ID",
@@ -89,7 +81,7 @@ public class MagicPromptExtension : Extension
             Default: "loading",
             IgnoreIf: "loading",
             Group: paramGroup,
-            OrderPriority: 4,
+            OrderPriority: 3,
             ValidateValues: false,
             GetValues: GetModelList
         ));
@@ -99,45 +91,36 @@ public class MagicPromptExtension : Extension
             Default: "loading",
             IgnoreIf: "loading",
             Group: paramGroup,
-            OrderPriority: 5,
+            OrderPriority: 4,
             ValidateValues: false,
             GetValues: GetInstructionList
-        ));
-        _paramAppendOriginal = T2IParamTypes.Register<bool>(new T2IParamType(
-            Name: "MP Append Original Prompt",
-            Description: "Append the original prompt after the generated LLM prompt.",
-            Default: "false",
-            Group: paramGroup,
-            OrderPriority: 6
         ));
 
         T2IParamInput.LateSpecialParameterHandlers.Add(userInput =>
         {
-            if (userInput.GetNullable(_paramAutoEnable) is null)
+            var prompt = userInput.InternalSet.Get(T2IParamTypes.Prompt);
+            var modelId = userInput.InternalSet.Get(_paramModelId);
+            var withoutMpOriginal = prompt.Replace("<mporiginal>", "");
+
+            if (string.IsNullOrWhiteSpace(modelId))
             {
-                ClearCache();
+                Logs.Info("MagicPrompt: disabled");
+                userInput.InternalSet.Set(T2IParamTypes.Prompt, withoutMpOriginal);
                 return;
             }
 
             // Get the current positive prompt early; if missing, nothing to do
-            var prompt = userInput.InternalSet.Get(T2IParamTypes.Prompt);
             if (string.IsNullOrWhiteSpace(prompt))
             {
-                return;
-            }
-
-            // If Auto Enable is not checked, clear cache and return early
-            if (!userInput.InternalSet.Get(_paramAutoEnable))
-            {
-                // Clear cache whenever Auto Enable is off
-                ClearCache();
+                Logs.Info("MagicPrompt: empty prompt");
+                userInput.InternalSet.Set(T2IParamTypes.Prompt, withoutMpOriginal);
                 return;
             }
 
             // Parse the prompt to handle regional tags, segments, etc, and only
             // send the core text to the LLM
             var promptRegions = new PromptRegion(prompt);
-            var parsedPrompt = string.IsNullOrWhiteSpace(promptRegions.GlobalPrompt)
+            var sendToLlm = string.IsNullOrWhiteSpace(promptRegions.GlobalPrompt)
                 ? prompt
                 : promptRegions.GlobalPrompt;
 
@@ -146,39 +129,36 @@ public class MagicPromptExtension : Extension
                 var useCache = userInput.InternalSet.Get(_paramUseCache);
                 if (!useCache)
                 {
+                    Logs.Info("MagicPrompt: not using cache");
+
                     // Clear cache whenever Use Cache is off
                     ClearCache();
+                } else {
+                    Logs.Info("MagicPrompt: using cache");
                 }
 
                 var llmResponse = useCache
-                    ? HandleCacheableRequest(parsedPrompt, userInput)
+                    ? HandleCacheableRequest(sendToLlm, userInput)
                     // Use Cache is disabled: proceed with normal behavior
                     // (no cache coordination needed)
-                    : MakeLlmRequest(parsedPrompt, userInput);
+                    : MakeLlmRequest(sendToLlm, userInput);
 
                 // No response from LLM, fallback to original prompt
-                if (string.IsNullOrEmpty(llmResponse)) return;
-
-                // Remove the core text that was sent to the LLM from the original
-                // prompt, leaving only regional tags/parts
-                if (
-                    !userInput.InternalSet.Get(_paramAppendOriginal)
-                    && !string.IsNullOrWhiteSpace(promptRegions.GlobalPrompt)
-                )
-                {
-                    prompt = prompt.Replace(promptRegions.GlobalPrompt, string.Empty);
+                if (string.IsNullOrEmpty(llmResponse)) {
+                    Logs.Info("MagicPrompt: empty response from LLM");
+                    userInput.InternalSet.Set(T2IParamTypes.Prompt, withoutMpOriginal);
+                    return;
                 }
 
-                if (!string.IsNullOrEmpty(prompt))
-                {
-                    llmResponse = $"{llmResponse}\n{prompt}";
-                }
+                prompt = prompt.Replace(promptRegions.GlobalPrompt, llmResponse);
+                prompt = prompt.Replace("<mporiginal>", promptRegions.GlobalPrompt);
 
-                userInput.InternalSet.Set(T2IParamTypes.Prompt, llmResponse);
+                userInput.InternalSet.Set(T2IParamTypes.Prompt, prompt);
             }
             catch (Exception ex)
             {
                 Logs.Debug($"MagicPrompt phone home call failed: {ex.Message}");
+                userInput.InternalSet.Set(T2IParamTypes.Prompt, withoutMpOriginal);
             }
         });
     }
@@ -317,16 +297,27 @@ public class MagicPromptExtension : Extension
         }
 
         // instructions currently holds the selected key
-        var resolved = instructionsObj[instructions]?.ToString();
+        var customPrompt = instructionsObj["custom"][instructions]?["content"].ToString();
+        if (!string.IsNullOrWhiteSpace(customPrompt))
+        {
+            var title = instructionsObj["custom"][instructions]?["title"].ToString();
+            Logs.Info($"MagicPrompt: using custom instructions \"{title}\"");
+            return customPrompt;
+        }
 
-        return string.IsNullOrWhiteSpace(resolved)
-            ? instructionsObj["prompt"]?.ToString()
-            : resolved;
+        var basePrompt = instructionsObj[instructions]?.ToString();
+        if (!string.IsNullOrWhiteSpace(basePrompt))
+        {
+            Logs.Info($"MagicPrompt: using base instructions \"{instructions}\"");
+            return basePrompt;
+        }
+
+        Logs.Info("MagicPrompt: using base instructions \"prompt\"");
+        return instructionsObj["prompt"]?.ToString();
     }
 
     private static List<string> GetModelList(Session session)
     {
-
         var defaultResponse = new List<string>{"loading///loading"};
 
         try
