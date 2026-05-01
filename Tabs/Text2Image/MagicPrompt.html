@@ -193,9 +193,37 @@
                                     </div>
                                     <div class="form-group">
                                         <label class="form-label" for="modelSelect">Model</label>
-                                        <select id="modelSelect" class="form-select">
+                                        <select id="modelSelect" class="form-select mp-model-select-with-cost">
                                             <option value="">Loading models...</option>
                                         </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label" for="blockedModelsCollapseToggle">Blocked models</label>
+                                        <p class="small text-muted mb-2 mp-blocked-help">Excluded from the Model list for this LLM backend. Click a chip to unblock.</p>
+                                        <div id="blockedModelsChips" class="mp-blocked-chips mb-2" role="list" aria-label="Blocked models"></div>
+                                        <p id="blockedModelsEmptyHint" class="small text-muted mb-2" hidden>No blocked models for this backend.</p>
+                                        <button type="button" class="btn btn-outline-secondary btn-sm" id="blockedModelsCollapseToggle" data-bs-toggle="collapse" data-bs-target="#blockedModelsPickerCollapse" aria-expanded="false" aria-controls="blockedModelsPickerCollapse">Add blocked models…</button>
+                                        <div class="collapse mt-2" id="blockedModelsPickerCollapse">
+                                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                                <span class="small text-muted">Choose models to hide from the list</span>
+                                                <button type="button" class="btn-close" aria-label="Close blocked models picker" id="blockedModelsPickerCloseBtn"></button>
+                                            </div>
+                                            <div class="d-flex flex-wrap align-items-stretch gap-2 mb-2">
+                                                <div class="input-group input-group-sm flex-grow-1" style="min-width: 140px;">
+                                                    <span class="input-group-text" id="blockedModelsFilterLabel">Filter</span>
+                                                    <input type="search" class="form-control" id="blockedModelsFilterInput" autocomplete="off" placeholder="Search models" aria-describedby="blockedModelsFilterLabel">
+                                                </div>
+                                                <div class="dropdown flex-shrink-0">
+                                                    <button class="btn btn-outline-secondary btn-sm dropdown-toggle" type="button" id="blockedModelsSortByBtn" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Sort by</button>
+                                                    <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="blockedModelsSortByBtn">
+                                                        <li><button class="dropdown-item" type="button" data-mp-sort="default">Default order</button></li>
+                                                        <li><button class="dropdown-item" type="button" data-mp-sort="newest">Newest</button></li>
+                                                        <li><button class="dropdown-item" type="button" data-mp-sort="expensive">Expensive (OUT)</button></li>
+                                                    </ul>
+                                                </div>
+                                            </div>
+                                            <div id="blockedModelsPickerList" class="list-group list-group-flush mp-blocked-models-picker overflow-auto"></div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -241,7 +269,7 @@
                                     </div>
                                     <div class="form-group">
                                         <label class="form-label" for="visionModel">Vision Model</label>
-                                        <select id="visionModel" class="form-select">
+                                        <select id="visionModel" class="form-select mp-model-select-with-cost">
                                             <option value="">Loading models...</option>
                                         </select>
                                     </div>

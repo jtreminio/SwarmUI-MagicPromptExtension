@@ -68,6 +68,14 @@ if (!window.MP) {
                     apikey: ''
                 }
             },
+            blockedModels: {
+                ollama: [],
+                openrouter: [],
+                openaiapi: [],
+                openai: [],
+                anthropic: [],
+                grok: [],
+            },
             // Instructions
             instructions: {
                 chat: '',

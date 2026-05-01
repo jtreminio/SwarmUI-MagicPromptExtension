@@ -32,3 +32,4 @@ Thumbs.db
 config.json
 /.vs
 config.json
+**/Directory.Build.local.props

@@ -45,7 +45,10 @@ public static class ModelListProvider
                     name = modelId;
                 }
 
-                list.Add($"{modelId}///{name}");
+                string costOut = m?["costOut"]?.ToString();
+                string displayName = $"{name} ‧ {(string.IsNullOrWhiteSpace(costOut) ? "—" : costOut.Trim())}";
+
+                list.Add($"{modelId}///{displayName}");
             }
 
             return list.Count > 0 ? list : defaultResponse;

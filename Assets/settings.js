@@ -53,6 +53,594 @@ function debounce(func, wait) {
   };
 }
 
+/// Backend ids for chat LLM (radio id suffix lowercase: `openaiAPILLMBtn` → `openaiapi`).
+const CHAT_BACKEND_KEYS = [
+  'ollama',
+  'openrouter',
+  'openaiapi',
+  'openai',
+  'anthropic',
+  'grok',
+];
+
+/**
+ * @returns {Object<string, string[]>}
+ */
+function emptyBlockedModelsMap() {
+  let out = {};
+  for (let i = 0; i < CHAT_BACKEND_KEYS.length; i++) {
+    out[CHAT_BACKEND_KEYS[i]] = [];
+  }
+  return out;
+}
+
+/**
+ * @param {*} raw
+ * @returns {Object<string, string[]>}
+ */
+function normalizeBlockedModelsFromServer(raw) {
+  let out = emptyBlockedModelsMap();
+  if (!raw || typeof raw !== 'object') {
+    return out;
+  }
+  for (let i = 0; i < CHAT_BACKEND_KEYS.length; i++) {
+    let key = CHAT_BACKEND_KEYS[i];
+    let candidate = raw[key];
+    if (!Array.isArray(candidate)) {
+      continue;
+    }
+    let seenObj = {};
+    let list = [];
+    for (let j = 0; j < candidate.length; j++) {
+      let sid = typeof candidate[j] === 'string' ? candidate[j].trim() : '';
+      if (!sid || seenObj[sid]) {
+        continue;
+      }
+      seenObj[sid] = true;
+      list.push(sid);
+    }
+    out[key] = list;
+  }
+  return out;
+}
+
+/**
+ * @param {*} from MP.settings.blockedModels
+ * @returns {Object<string, string[]>}
+ */
+function cloneBlockedModelsForSave(from) {
+  let base = from && typeof from === 'object' ? from : emptyBlockedModelsMap();
+  let out = {};
+  for (let i = 0; i < CHAT_BACKEND_KEYS.length; i++) {
+    let k = CHAT_BACKEND_KEYS[i];
+    let arr = base[k];
+    out[k] = Array.isArray(arr) ? arr.slice() : [];
+  }
+  return out;
+}
+
+/** Backend id matching the LLM settings radios. */
+function getSelectedChatBackendIdFromDom() {
+  let sel = document.querySelector('input[name="llmBackend"]:checked');
+  if (sel && sel.id && typeof sel.id === 'string') {
+    return sel.id.replace('LLMBtn', '').toLowerCase();
+  }
+  return MP.settings.backend || 'ollama';
+}
+
+function persistBlockedModelsToServerInner() {
+  genericRequest(
+    'SaveMagicPromptSettings',
+    {
+      settings: {
+        blockedModels: cloneBlockedModelsForSave(MP.settings.blockedModels),
+      },
+    },
+    (data) => {
+      if (data.success && data.settings) {
+        MP.settings.blockedModels = normalizeBlockedModelsFromServer(
+          data.settings.blockedModels
+        );
+      } else if (!data.success) {
+        console.warn('Blocked models save failed:', data.error);
+      }
+      updateModelListOnLeft();
+    },
+    0,
+    (err) => {
+      console.warn('Blocked models save error:', err);
+    }
+  );
+}
+
+const persistBlockedModelsDebounced = debounce(persistBlockedModelsToServerInner, 450);
+
+/**
+ * OUT (completion) cost string from API, or em dash when unknown.
+ * @param {*} row
+ * @returns {string}
+ */
+function mpModelCostOutLabel(row) {
+  if (!row || typeof row.costOut !== 'string') {
+    return '—';
+  }
+  let s = row.costOut.trim();
+  return s || '—';
+}
+
+/**
+ * Text for native &lt;select&gt; options (name + OUT cost).
+ * @param {*} row
+ * @returns {string}
+ */
+function mpModelSelectOptionText(row) {
+  let title = (row && (row.name || row.model)) || '';
+  return `${title} ‧ ${mpModelCostOutLabel(row)}`;
+}
+
+/**
+ * @param {*} row
+ * @returns {number|null}
+ */
+function mpModelCatalogCreatedTs(row) {
+  if (!row || row.created === undefined || row.created === null) {
+    return null;
+  }
+  let n = typeof row.created === 'number' ? row.created : parseInt(row.created, 10);
+  if (!Number.isFinite(n) || n <= 0) {
+    return null;
+  }
+  return n;
+}
+
+/**
+ * @param {*} row
+ * @returns {number|undefined}
+ */
+function mpModelCatalogOutUsdMm(row) {
+  if (!row || row.outUsdPerMillion === undefined || row.outUsdPerMillion === null) {
+    return undefined;
+  }
+  let x =
+    typeof row.outUsdPerMillion === 'number'
+      ? row.outUsdPerMillion
+      : parseFloat(row.outUsdPerMillion);
+  if (!Number.isFinite(x)) {
+    return undefined;
+  }
+  return x;
+}
+
+/** @returns {number} */
+function mpModelCatalogNameCompare(a, b) {
+  let na = (((a || {}).name || (a || {}).model) || '').toLowerCase();
+  let nb = (((b || {}).name || (b || {}).model) || '').toLowerCase();
+  if (na < nb) {
+    return -1;
+  }
+  if (na > nb) {
+    return 1;
+  }
+  return 0;
+}
+
+/**
+ * Stable sort rules for picker; does not mutate source.
+ * @param {unknown[]} catalogSrc
+ * @returns {unknown[]}
+ */
+function sortBlockedModelsPickerCatalog(catalogSrc) {
+  let slice = catalogSrc.slice();
+  let sortKey = MP.blockedModelsPickerSort || 'default';
+  if (!sortKey || sortKey === 'default') {
+    return slice;
+  }
+  if (sortKey === 'newest') {
+    slice.sort((a, b) => {
+      let ta = mpModelCatalogCreatedTs(a);
+      let tb = mpModelCatalogCreatedTs(b);
+      let ha = ta !== null;
+      let hb = tb !== null;
+      if (ha !== hb) {
+        return hb ? 1 : -1;
+      }
+      if (!ha || ta === tb) {
+        return mpModelCatalogNameCompare(a, b);
+      }
+      return tb - ta;
+    });
+    return slice;
+  }
+  if (sortKey === 'expensive') {
+    slice.sort((a, b) => {
+      let pa = mpModelCatalogOutUsdMm(a);
+      let pb = mpModelCatalogOutUsdMm(b);
+      let ua = typeof pa !== 'number';
+      let ub = typeof pb !== 'number';
+      if (ua !== ub) {
+        return ua ? 1 : -1;
+      }
+      if (!ua && pa !== pb) {
+        return pb - pa;
+      }
+      return mpModelCatalogNameCompare(a, b);
+    });
+    return slice;
+  }
+  return slice;
+}
+
+/** Updates Sort by button caption from `MP.blockedModelsPickerSort`. */
+function refreshBlockedModelsSortButtonLabel() {
+  let btn = document.getElementById('blockedModelsSortByBtn');
+  if (!btn) {
+    return;
+  }
+  let k = MP.blockedModelsPickerSort || 'default';
+  if (k === 'newest') {
+    btn.textContent = 'Sort: Newest';
+  } else if (k === 'expensive') {
+    btn.textContent = 'Sort: Expensive (OUT)';
+  } else {
+    btn.textContent = 'Sort by';
+  }
+}
+
+/**
+ * Builds chat model dropdown from cache, excluding blocked ids for backend.
+ */
+function reapplyChatModelSelectFromCachedCatalog() {
+  let modelSelect = document.getElementById('modelSelect');
+  let backendId = MP.settings.backend || getSelectedChatBackendIdFromDom();
+  let catalog = MP.cachedChatModelsByBackend && MP.cachedChatModelsByBackend[backendId];
+  if (!modelSelect || !Array.isArray(catalog)) {
+    return;
+  }
+
+  let blocked = new Set(
+    (MP.settings.blockedModels && MP.settings.blockedModels[backendId]) || []
+  );
+  let previous = modelSelect.value;
+
+  modelSelect.innerHTML = '';
+  let defaultOption = new Option('-- Select a model --', '');
+  modelSelect.add(defaultOption);
+
+  let seenIds = {};
+  /** @type {{ [id: string]: boolean }} */
+  let allowedLookup = {};
+
+  let firstAllowed = '';
+  for (let i = 0; i < catalog.length; i++) {
+    let row = catalog[i];
+    if (!row || !row.model || seenIds[row.model]) {
+      continue;
+    }
+    if (blocked.has(row.model)) {
+      continue;
+    }
+
+    seenIds[row.model] = true;
+    let option = new Option(mpModelSelectOptionText(row), row.model);
+    modelSelect.add(option);
+
+    allowedLookup[row.model] = true;
+    if (!firstAllowed) {
+      firstAllowed = row.model;
+    }
+  }
+
+  let picked = '';
+
+  if (previous && allowedLookup[previous]) {
+    picked = previous;
+  }
+
+  else if (MP.settings.model && allowedLookup[MP.settings.model]) {
+
+    picked = MP.settings.model;
+  }
+
+
+
+  else {
+    picked = firstAllowed;
+  }
+
+
+
+  MP.settings.model = picked;
+
+  setModelIfExists(modelSelect, picked);
+
+}
+
+/** Renders picker checkboxes from `MP.cachedChatModelsByBackend`. */
+function rebuildBlockedModelPickerDom() {
+  let listRoot = document.getElementById('blockedModelsPickerList');
+  let filterEl = document.getElementById('blockedModelsFilterInput');
+  let backendId = getSelectedChatBackendIdFromDom();
+  if (!listRoot) {
+    return;
+  }
+
+  listRoot.innerHTML = '';
+  let queryText = '';
+  if (filterEl && typeof filterEl.value === 'string') {
+    queryText = filterEl.value.trim().toLowerCase();
+  }
+  let catalog = MP.cachedChatModelsByBackend && MP.cachedChatModelsByBackend[backendId];
+  if (!Array.isArray(catalog)) {
+    let emptyHint = document.createElement('div');
+    emptyHint.className = 'list-group-item text-muted small';
+    emptyHint.textContent =
+      'Load models first using the dropdown above once your backend is connected.';
+    listRoot.appendChild(emptyHint);
+    return;
+  }
+
+  let sortedCatalog = sortBlockedModelsPickerCatalog(catalog);
+
+  if (!MP.settings.blockedModels) {
+    MP.settings.blockedModels = emptyBlockedModelsMap();
+  }
+  let blockedArr =
+    MP.settings.blockedModels[backendId] || [];
+  let blockedSet = new Set(blockedArr);
+
+  for (let i = 0; i < sortedCatalog.length; i++) {
+    let row = sortedCatalog[i];
+    if (!row || !row.model) {
+      continue;
+    }
+    let label = row.name || row.model;
+    if (queryText) {
+      let lowLabel = ('' + label).toLowerCase();
+      let lowId = ('' + row.model).toLowerCase();
+      if (lowLabel.indexOf(queryText) === -1 && lowId.indexOf(queryText) === -1) {
+        continue;
+      }
+    }
+
+    let wrap = document.createElement('label');
+    wrap.className =
+      'list-group-item list-group-item-action d-flex align-items-center gap-2 w-100 mb-0 mp-blocked-picker-row';
+    let cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.className = 'form-check-input mt-0 flex-shrink-0';
+    cb.checked = blockedSet.has(row.model);
+    let sid = '' + row.model;
+    cb.addEventListener('change', () => {
+      let bk = getSelectedChatBackendIdFromDom();
+      if (!MP.settings.blockedModels) {
+        MP.settings.blockedModels = emptyBlockedModelsMap();
+      }
+      if (!Array.isArray(MP.settings.blockedModels[bk])) {
+        MP.settings.blockedModels[bk] = [];
+      }
+      let list = MP.settings.blockedModels[bk];
+      if (cb.checked) {
+        let already = false;
+        for (let k = 0; k < list.length; k++) {
+          if (list[k] === sid) {
+            already = true;
+            break;
+          }
+        }
+        if (!already) {
+          list.push(sid);
+        }
+      } else {
+        MP.settings.blockedModels[bk] = list.filter((x) => x !== sid);
+      }
+      renderBlockedModelChips();
+      reapplyChatModelSelectFromCachedCatalog();
+      persistBlockedModelsDebounced();
+    });
+    let txt = document.createElement('span');
+    txt.className = 'small text-break mp-blocked-picker-name flex-grow-1';
+    txt.textContent = label;
+    let costCell = document.createElement('span');
+    costCell.className =
+      'small text-muted mp-blocked-picker-out-cost flex-shrink-0';
+    costCell.textContent =
+      `OUT ${mpModelCostOutLabel(row)}`;
+    wrap.appendChild(cb);
+    wrap.appendChild(txt);
+    wrap.appendChild(costCell);
+    listRoot.appendChild(wrap);
+  }
+}
+
+/**
+ * Chips for blocked model ids — click removes.
+ */
+function renderBlockedModelChips() {
+  let chipsRoot = document.getElementById('blockedModelsChips');
+  let hint = document.getElementById('blockedModelsEmptyHint');
+  let backendId = getSelectedChatBackendIdFromDom();
+  if (!chipsRoot) {
+    return;
+  }
+  if (!MP.settings.blockedModels) {
+    MP.settings.blockedModels = emptyBlockedModelsMap();
+  }
+  let list = MP.settings.blockedModels[backendId];
+  chipsRoot.innerHTML = '';
+  if (!Array.isArray(list) || list.length === 0) {
+    chipsRoot.classList.remove('has-chips');
+    if (hint) {
+      hint.hidden = false;
+    }
+    return;
+  }
+  if (hint) {
+    hint.hidden = true;
+  }
+  chipsRoot.classList.add('has-chips');
+  let catalog = MP.cachedChatModelsByBackend && MP.cachedChatModelsByBackend[backendId];
+
+  /**
+   * @param {string} modelId
+   * @returns {*}
+   */
+  function lookupRow(modelId) {
+    if (!catalog || !Array.isArray(catalog)) {
+      return null;
+    }
+    for (let i = 0; i < catalog.length; i++) {
+      let r = catalog[i];
+      if (r && r.model === modelId) {
+        return r;
+      }
+    }
+    return null;
+  }
+
+  for (let j = 0; j < list.length; j++) {
+    let modelId = list[j];
+    let row = lookupRow(modelId);
+    let baseName = row ? row.name || row.model : modelId;
+    let btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn btn-sm btn-outline-secondary mp-blocked-chip mb-1 me-1';
+    btn.dataset.modelId = modelId;
+    btn.setAttribute('role', 'listitem');
+    let removeLabel =
+      typeof modelId === 'string'
+        ? 'Remove '
+            + modelId
+            + ', blocked'
+        : 'Remove from blocked';
+    btn.setAttribute('aria-label', removeLabel);
+    let chipText = `${baseName} ‧ OUT ${mpModelCostOutLabel(row)}`;
+    btn.title = chipText;
+    btn.textContent = chipText;
+    chipsRoot.appendChild(btn);
+  }
+}
+
+function refreshBlockedModelsUI() {
+  renderBlockedModelChips();
+  let collapseEl = document.getElementById('blockedModelsPickerCollapse');
+  let open = !!(collapseEl && collapseEl.classList.contains('show'));
+  if (open) {
+    rebuildBlockedModelPickerDom();
+  }
+
+
+}
+
+/** One-time checkbox / chip / collapse listeners */
+function initBlockedModelsSettingsUi() {
+  if (MP.blockedModelsSettingsUiAttached) {
+    return;
+  }
+  MP.blockedModelsSettingsUiAttached = true;
+
+  let chipsRoot = document.getElementById('blockedModelsChips');
+  if (chipsRoot) {
+    chipsRoot.addEventListener('click', (ev) => {
+      let t = ev.target;
+      let btn =
+        typeof t.closest === 'function' ? t.closest('.mp-blocked-chip') : null;
+      if (!btn || btn.tagName !== 'BUTTON') {
+        return;
+      }
+      let sid = btn.dataset.modelId || '';
+      if (!sid || !MP.settings.blockedModels) {
+        return;
+      }
+      let bk = getSelectedChatBackendIdFromDom();
+      let listRef = MP.settings.blockedModels[bk];
+      if (!Array.isArray(listRef)) {
+        return;
+      }
+      MP.settings.blockedModels[bk] = listRef.filter((x) => x !== sid);
+      persistBlockedModelsDebounced();
+      renderBlockedModelChips();
+      rebuildBlockedModelPickerDom();
+      reapplyChatModelSelectFromCachedCatalog();
+    });
+
+
+  }
+
+  let filterEl = document.getElementById('blockedModelsFilterInput');
+  if (filterEl) {
+    filterEl.addEventListener(
+      'input',
+      debounce(() => {
+        rebuildBlockedModelPickerDom();
+      }, 220)
+    );
+  }
+
+  let pickerCollapse = document.getElementById('blockedModelsPickerCollapse');
+  let closeBlockedPickerBtn = document.getElementById('blockedModelsPickerCloseBtn');
+  if (
+    closeBlockedPickerBtn &&
+    pickerCollapse &&
+    typeof bootstrap !== 'undefined' &&
+    bootstrap.Collapse
+  ) {
+    closeBlockedPickerBtn.addEventListener('click', () => {
+      let inst = bootstrap.Collapse.getInstance(pickerCollapse);
+      if (!inst) {
+        inst = new bootstrap.Collapse(pickerCollapse, { toggle: false });
+      }
+      inst.hide();
+      let toggleBtn = document.getElementById('blockedModelsCollapseToggle');
+      if (toggleBtn && typeof toggleBtn.focus === 'function') {
+        toggleBtn.focus();
+      }
+    });
+  }
+
+  if (pickerCollapse && typeof pickerCollapse.addEventListener === 'function') {
+    pickerCollapse.addEventListener('click', (ev) => {
+      let sel =
+        typeof ev.target.closest === 'function'
+          ? ev.target.closest('[data-mp-sort]')
+          : null;
+      if (!sel || sel.tagName !== 'BUTTON') {
+        return;
+      }
+      ev.preventDefault();
+      let mkRaw = sel.getAttribute('data-mp-sort');
+      if (mkRaw === null || mkRaw === '' || mkRaw === 'default') {
+        MP.blockedModelsPickerSort = 'default';
+      } else {
+        MP.blockedModelsPickerSort = mkRaw;
+      }
+      refreshBlockedModelsSortButtonLabel();
+      let sortToggle = document.getElementById('blockedModelsSortByBtn');
+      if (
+        sortToggle &&
+        typeof bootstrap !== 'undefined' &&
+        bootstrap.Dropdown
+      ) {
+        let dd = bootstrap.Dropdown.getInstance(sortToggle);
+        if (dd) {
+          dd.hide();
+        }
+      }
+      rebuildBlockedModelPickerDom();
+    });
+    pickerCollapse.addEventListener('shown.bs.collapse', () => {
+      refreshBlockedModelsSortButtonLabel();
+      rebuildBlockedModelPickerDom();
+    });
+    pickerCollapse.addEventListener('hidden.bs.collapse', () => {
+      let fi = document.getElementById('blockedModelsFilterInput');
+      if (fi) {
+        fi.value = '';
+      }
+      refreshBlockedModelsUI();
+    });
+  }
+}
+
 /**
  * Loads settings from the backend
  * @returns {Promise<Object>} Settings object
@@ -76,6 +664,9 @@ async function loadSettings() {
             visionmodel: serverSettings.visionmodel || '',
             linkChatAndVisionModels:
               serverSettings.linkChatAndVisionModels !== false, // Default to true if not set
+            blockedModels: normalizeBlockedModelsFromServer(
+              serverSettings.blockedModels
+            ),
             // Backends - merge using spread operator which does a "deep merge" of two objects
             backends: {
               ...MP.settings.backends, // Start with default endpoints
@@ -214,6 +805,7 @@ async function saveSettings(skipFeatureMappings = false) {
         },
       },
       instructions: MP.settings.instructions,
+      blockedModels: cloneBlockedModelsForSave(MP.settings.blockedModels),
     };
     // Update MP.settings with the new values
     MP.settings = settings;
@@ -354,27 +946,12 @@ async function fetchModels() {
       modelSelect.innerHTML = '';
       visionModelSelect.innerHTML = '';
 
-      // Add chat models
+      MP.cachedChatModelsByBackend = MP.cachedChatModelsByBackend || {};
+
+      // Add chat models (cache full list; dropdown omits blocked)
       if (Array.isArray(response.models)) {
-        const existingModelIds = new Set();
-        const defaultOption = new Option('-- Select a model --', '');
-        modelSelect.add(defaultOption);
-
-        response.models.forEach((model) => {
-          if (!model.model || existingModelIds.has(model.model)) {
-            if (!model.model) {
-              console.warn('Chat model missing model field:', model);
-            }
-            return;
-          }
-          existingModelIds.add(model.model);
-          const option = new Option(model.name || model.model, model.model);
-          modelSelect.add(option);
-        });
-
-        if (MP.settings.model) {
-          setModelIfExists(modelSelect, MP.settings.model);
-        }
+        MP.cachedChatModelsByBackend[chatBackendId] = response.models.slice();
+        reapplyChatModelSelectFromCachedCatalog();
       }
 
       // Add vision models
@@ -391,7 +968,10 @@ async function fetchModels() {
             return;
           }
           existingVisionModelIds.add(model.model);
-          const option = new Option(model.name || model.model, model.model);
+          let option = new Option(
+            mpModelSelectOptionText(model),
+            model.model
+          );
           visionModelSelect.add(option);
         });
 
@@ -399,6 +979,8 @@ async function fetchModels() {
           setModelIfExists(visionModelSelect, MP.settings.visionmodel);
         }
       }
+
+      refreshBlockedModelsUI();
 
       return response;
     })();
@@ -437,6 +1019,13 @@ function updateModelListOnLeft() {
     if (!modelSelect || !listOfModels || !listOfInstructions) {
       console.warn('Could not sync MP List of Models: source or destination select not found');
       return;
+    }
+
+    if (
+      typeof listOfModels.classList !== 'undefined' &&
+      !listOfModels.classList.contains('mp-model-select-with-cost')
+    ) {
+      listOfModels.classList.add('mp-model-select-with-cost');
     }
 
     listOfModels.innerHTML = '';
@@ -1841,6 +2430,7 @@ function initSettingsModal() {
     }
     initInstructionsUI();
     initInstructionsTabInterface();
+    initBlockedModelsSettingsUi();
 
     // Show loading state before fetching models
     const modelSelect = document.getElementById('modelSelect');
@@ -1935,6 +2525,7 @@ function initSettingsModal() {
             );
           });
           await fetchModels();
+          refreshBlockedModelsUI();
         } catch (error) {
           console.error(`Error fetching models for ${backend}:`, error);
           if (modelSelect) {

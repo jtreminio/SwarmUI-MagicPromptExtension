@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+using System.Linq;
 using Newtonsoft.Json.Linq;
 using SwarmUI.Core;
 using SwarmUI.Utils;
@@ -8,6 +10,71 @@ public class SessionSettings : MagicPromptAPI
 {
     private const string SETTINGS_KEY = "magicprompt";
     private const string SETTINGS_SUBKEY = "config";
+
+    /// <summary>Backend keys aligned with Chat LLM radios and <see cref="DefaultBackendConfig"/>.</summary>
+    private static readonly string[] BlockedModelBackendKeys =
+    [
+        "ollama",
+        "openrouter",
+        "openaiapi",
+        "openai",
+        "anthropic",
+        "grok"
+    ];
+
+    /// <summary>Loads <c>blockedModels</c>: each known backend maps to distinct non-empty model id strings.</summary>
+    private static void NormalizeBlockedModels(JObject settings)
+    {
+        if (settings["blockedModels"] is not JObject backendsMap)
+        {
+            settings["blockedModels"] = new JObject();
+            backendsMap = settings["blockedModels"] as JObject;
+        }
+
+        foreach (string key in BlockedModelBackendKeys)
+        {
+            JToken token = backendsMap[key];
+            if (token is not JArray incomingRows)
+            {
+                backendsMap[key] = new JArray();
+                continue;
+            }
+
+            JArray sanitized = [];
+            HashSet<string> seen = [];
+
+            foreach (JToken elem in incomingRows)
+            {
+                if (elem is not JValue jv || jv.Type != JTokenType.String)
+                {
+                    continue;
+                }
+
+                string id = jv.ToString()?.Trim();
+                if (string.IsNullOrEmpty(id))
+                {
+                    continue;
+                }
+
+                if (!seen.Contains(id.ToLowerInvariant()))
+                {
+                    seen.Add(id.ToLowerInvariant());
+                    sanitized.Add(id);
+                }
+            }
+
+            backendsMap[key] = sanitized;
+        }
+
+        foreach (JProperty leftover in backendsMap.Properties().ToList())
+        {
+            bool known = BlockedModelBackendKeys.Contains(leftover.Name);
+            if (!known)
+            {
+                backendsMap.Remove(leftover.Name);
+            }
+        }
+    }
 
     // Hardcoded API endpoints and configurations
     private static readonly JObject DefaultBackendConfig = new()
@@ -91,7 +158,16 @@ public class SessionSettings : MagicPromptAPI
             ["randomprompt"] = "You are a creative text prompt generator for Stable Diffusion image generation. Your ONLY job is to create detailed, funny text prompts that will be sent to an AI image generator to create hilarious images. You do NOT generate images - you only write TEXT PROMPTS that describe images.\n\nCreate a detailed, funny random image prompt depicting a crazy, absurd, or unexpectedly humorous situation. Include vivid, specific descriptions with characters, settings, actions, and amusing details. Make the scenarios wonderfully ridiculous with enough descriptive detail to create a compelling, hilarious image.\n\nExamples of good prompts:\n- a sophisticated penguin wearing a monocle conducting a symphony orchestra of confused farm animals\n- an elderly grandmother breakdancing on top of a giant hamburger while rainbow-colored squirrels cheer from the sidelines  \n- a grumpy dragon working as a barista making latte art shaped like tiny castles for a line of impatient unicorns\n\nRespond with ONLY the text prompt - no explanations, no commentary, no mentions about not being able to generate images. Just the descriptive text prompt that will be used by Stable Diffusion.",
             ["instructiongen"] = "You are an expert at creating system prompts for AI language models. A system prompt is a set of instructions given TO an AI that tells it how to behave, what tone to use, and what its purpose is. Your task is to write a SINGLE, COHESIVE system prompt that will be given directly to an AI language model. This prompt should be written in the second person (\"You are...\", \"Your goal is...\") as it's addressing the AI directly. The system prompt you create must be: 1) Written as direct instructions TO the AI (not as instructions for a human user) 2) Focused on guiding the AI's behavior, tone, and response style 3) Specific to the use case and categories provided 4) Complete and self-contained (it will be used exactly as you write it) Categories explanation: - Chat: The AI responds to general user questions and maintains a specific personality/tone. - Vision: The AI analyzes uploaded images and provides descriptions or insights. - Caption: The AI generates Stable Diffusion text prompts from uploaded images to recreate similar images. - Prompt: The AI enhances basic user text into detailed Stable Diffusion prompts for image generation. Example request: 'I need instructions for an AI that helps with coding' Example correct response: 'You are a helpful coding assistant with expertise across multiple programming languages. Your primary goal is to help users write, debug, and understand code. Maintain a clear, educational tone that explains concepts thoroughly without being condescending. When presented with code problems, first identify the issue, then explain why it's happening, and finally provide a working solution with comments explaining the changes. Always format code blocks with appropriate syntax highlighting. If you're unsure about something, acknowledge your uncertainty rather than providing potentially incorrect information. Prioritize best practices, readability, and security in all code you suggest.' IMPORTANT: Provide ONLY the system prompt text with no preamble, explanations, or notes. Do not include headings like 'System Prompt:' or lists of guidelines. The text you provide will be used exactly as-is with no editing."
         },
-        ["backends"] = DefaultBackendConfig.DeepClone() // TODO: Change the name of this to something more descriptive
+        ["backends"] = DefaultBackendConfig.DeepClone(), // TODO: Change the name of this to something more descriptive
+        ["blockedModels"] = new JObject
+        {
+            ["ollama"] = new JArray(),
+            ["openrouter"] = new JArray(),
+            ["openaiapi"] = new JArray(),
+            ["openai"] = new JArray(),
+            ["anthropic"] = new JArray(),
+            ["grok"] = new JArray()
+        }
     };
 
     public static async Task<JObject> GetMagicPromptSettings()
@@ -134,6 +210,7 @@ public class SessionSettings : MagicPromptAPI
                 }
                 settings["backends"] = backendsConfig;
             }
+            NormalizeBlockedModels(settings);
             return CreateSuccessResponse(null, null, settings);
         }
         catch (Exception ex)
@@ -264,6 +341,8 @@ public class SessionSettings : MagicPromptAPI
             newSettings["backends"]["anthropic"]["baseurl"] = "https://api.anthropic.com";
             newSettings["backends"]["openrouter"]["baseurl"] = "https://openrouter.ai";
             newSettings["backends"]["grok"]["baseurl"] = "https://api.x.ai";
+
+            NormalizeBlockedModels(newSettings);
 
             // Don't save API keys in settings as they are now stored in UserUpstreamApiKeys
             JObject backends = newSettings["backends"] as JObject;

@@ -55,6 +55,8 @@ The MagicPrompt Extension now integrates directly with SwarmUI's prompt parsing 
 
 * **Automatic Parameter Group**: A new "Magic Prompt Auto Enable" parameter group appears in the sidebar interface when the extension is installed.
 * **Prompt Tag Processing**: Use `<mpprompt:your prompt here>` tags directly in your prompts for automatic LLM processing during generation. Only what is in this tag will be sent to your LLM. The response will replace the tag.
+* **Suppressing Output (for chaining)**: Add a trailing `false` flag in the instruction section to make the LLM request but NOT insert the response into the final prompt. The response is still available via `<mpresponse:N>`.
+  * Example: `<mpprompt[Action, false]:some tags>` (or `<mpprompt[false]:some tags>`) then reference it later with `<mpresponse:0>`.
 * **Attaching the Original Prompt**: Use `<mporiginal>` to add your original, unmodified tags back to your prompt. This can useful if your model works better with the original tag-based prompt.
 * **Smart Caching**: The "MP Use Cache" parameter allows you to cache LLM responses for identical prompts, significantly improving performance and reducing API costs during batch generation. Use alongside the Wildcard Seed Generation feature below for more powerful caching!
 * **Wildcard Seed Generation**: The "MP Generate Wildcard Seed" parameter generates new wildcard seeds for each batch, perfect for creating varied results while reusing cached LLM responses. If your prompts contain `<wildcard>` or `<wc>` tags, and you run a batch of multiple images, the same wildcard selections will be chosen, ensuring your prompts are the same and the LLM is called only once per batch.

@@ -213,6 +213,38 @@ public class MagicPromptAPI
         }
     }
 
+    /// <summary>OpenRouter exposes prices as USD dollars per token; format for UI as USD per million output tokens.</summary>
+    internal static string FormatOpenRouterCompletionCostPerMillionOut(string completionUsdPerToken)
+    {
+        if (string.IsNullOrWhiteSpace(completionUsdPerToken))
+        {
+            return null;
+        }
+
+        if (!decimal.TryParse(completionUsdPerToken.Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out decimal perToken))
+        {
+            return null;
+        }
+
+        decimal perMillion = perToken * 1_000_000m;
+        return $"${perMillion.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)}";
+    }
+
+    internal static double? TryGetOpenRouterOutputUsdPerMillion(string completionUsdPerToken)
+    {
+        if (string.IsNullOrWhiteSpace(completionUsdPerToken))
+        {
+            return null;
+        }
+
+        if (!decimal.TryParse(completionUsdPerToken.Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out decimal perToken))
+        {
+            return null;
+        }
+
+        return (double)(perToken * 1_000_000m);
+    }
+
     /// <summary>Deserializes the API response into a list of models.</summary>
     /// <returns>A list of models or null if deserialization fails.</returns>
     public static List<ModelData> DeserializeModels(string responseContent, string backend)
@@ -225,6 +257,13 @@ public class MagicPromptAPI
                     RootObject rootObject = JsonConvert.DeserializeObject<RootObject>(responseContent);
                     if (rootObject?.Data != null)
                     {
+                        foreach (ModelData m in rootObject.Data)
+                        {
+                            if (m.ModifiedAt != default)
+                            {
+                                m.Created = new DateTimeOffset(m.ModifiedAt.ToUniversalTime()).ToUnixTimeSeconds();
+                            }
+                        }
                         return rootObject.Data;
                     }
                     else
@@ -240,7 +279,8 @@ public class MagicPromptAPI
                             x => new ModelData
                             {
                                 Model = x.Id,
-                                Name = x.Id
+                                Name = x.Id,
+                                Created = x.Created > 0 ? x.Created : null
                             })];
                     }
                     else
@@ -257,7 +297,8 @@ public class MagicPromptAPI
                             x => new ModelData
                             {
                                 Model = x.Id,
-                                Name = x.Id
+                                Name = x.Id,
+                                Created = x.Created > 0 ? x.Created : null
                             })];
                     }
                     else
@@ -273,7 +314,8 @@ public class MagicPromptAPI
                         {
                             Model = x.Id,
                             Name = GetFriendlyNameFromId(x.Id),
-                            Version = ExtractVersionFromId(x.Id)
+                            Version = ExtractVersionFromId(x.Id),
+                            Created = x.Created > 0 ? x.Created : null
                         })];
                     }
                     else
@@ -288,7 +330,8 @@ public class MagicPromptAPI
                         return [.. openAIAPIResponse.Data.Select(x => new ModelData
                         {
                             Model = x.Id,
-                            Name = x.Id
+                            Name = x.Id,
+                            Created = x.Created > 0 ? x.Created : null
                         })];
                     }
                     else
@@ -311,7 +354,10 @@ public class MagicPromptAPI
                             return [.. openRouterResponse.Data.Select(x => new ModelData
                             {
                                 Model = x.Id,
-                                Name = x.Name ?? x.Id
+                                Name = x.Name ?? x.Id,
+                                CostOut = FormatOpenRouterCompletionCostPerMillionOut(x.Pricing?.Completion),
+                                Created = x.Created != 0 ? x.Created : null,
+                                OutUsdPerMillion = TryGetOpenRouterOutputUsdPerMillion(x.Pricing?.Completion)
                             })];
                         }
                         Logs.Error("OpenRouter response contains no model data");

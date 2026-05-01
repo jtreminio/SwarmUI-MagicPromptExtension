@@ -801,3 +801,33 @@ body .modal#customInstructionModal.show {
         cursor: pointer;
         pointer-events: auto;
     }
+
+/* Blocked chat models picker (per LLM backend) */
+#settingsModal .mp-blocked-chips:not(.has-chips) {
+    min-height: 0;
+}
+
+#settingsModal .mp-model-select-with-cost {
+    font-variant-numeric: tabular-nums;
+}
+
+#settingsModal .mp-blocked-picker-name {
+    min-width: 0;
+}
+
+#settingsModal .mp-blocked-picker-out-cost {
+    text-align: right;
+    white-space: nowrap;
+    margin-left: auto;
+}
+
+#settingsModal .mp-blocked-picker-row .form-check-input {
+    flex-shrink: 0;
+}
+
+#settingsModal .mp-blocked-chip {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}

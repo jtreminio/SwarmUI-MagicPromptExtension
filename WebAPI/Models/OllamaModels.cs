@@ -62,6 +62,18 @@ public class ModelData
 
     [JsonProperty("version")]
     public string Version { get; set; }
+
+    /// <summary>Output/completion-side price when known (e.g. OpenRouter), human-readable.</summary>
+    [JsonProperty("costOut", NullValueHandling = NullValueHandling.Ignore)]
+    public string CostOut { get; set; }
+
+    /// <summary>Unix epoch seconds for sort-by-newest when the provider exposes it.</summary>
+    [JsonProperty("created", NullValueHandling = NullValueHandling.Ignore)]
+    public long? Created { get; set; }
+
+    /// <summary>Output USD per million tokens for sort-by-price when known (OpenRouter).</summary>
+    [JsonProperty("outUsdPerMillion", NullValueHandling = NullValueHandling.Ignore)]
+    public double? OutUsdPerMillion { get; set; }
 }
 
 public class ModelDetails

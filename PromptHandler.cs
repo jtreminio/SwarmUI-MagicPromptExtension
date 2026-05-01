@@ -9,24 +9,27 @@ namespace Hartsy.Extensions.MagicPromptExtension;
 public class PromptHandler
 {
     // Matches <mpprompt:...> and <mpprompt[InstructionName]:...>
-    // Group 1 = instruction identifier (optional), Group 2 = prompt content (handles nested tags)
+    // Group 1 = instruction identifier (optional, may include a trailing ", false" flag), Group 2 = prompt content (handles nested tags)
     private static readonly Regex MppromptRegex = new(@"<mpprompt(?:\[([^\]]+)\])?:((?:[^<>]|<[^>]*>)+)>", RegexOptions.Compiled);
     private static readonly Regex MpresponseRegex = new(@"<mpresponse:(\d+)>", RegexOptions.Compiled);
     private readonly PromptCache _cache;
     private readonly T2IRegisteredParam<bool> _paramUseCache;
     private readonly T2IRegisteredParam<string> _paramModelId;
     private readonly T2IRegisteredParam<string> _paramInstructions;
+    private readonly T2IRegisteredParam<string> _paramPostFilter;
 
     public PromptHandler(
         PromptCache cache,
         T2IRegisteredParam<bool> paramUseCache,
         T2IRegisteredParam<string> paramModelId,
-        T2IRegisteredParam<string> paramInstructions)
+        T2IRegisteredParam<string> paramInstructions,
+        T2IRegisteredParam<string> paramPostFilter)
     {
         _cache = cache;
         _paramUseCache = paramUseCache;
         _paramModelId = paramModelId;
         _paramInstructions = paramInstructions;
+        _paramPostFilter = paramPostFilter;
     }
 
     /// <summary>
@@ -67,12 +70,13 @@ public class PromptHandler
         {
             var match = matches[i];
             var fullTag = match.Value;
-            var instructionId = match.Groups[1].Success ? match.Groups[1].Value : null;
+            var instructionRaw = match.Groups[1].Success ? match.Groups[1].Value : null;
+            ParseInstructionSpecifier(instructionRaw, out string instructionId, out bool printResponse);
             var mppromptContent = ResolveMpresponseReferences(match.Groups[2].Value, llmResponses);
 
             var llmResponse = GetLlmResponse(mppromptContent, userInput, instructionId, useCache, i, fullTag);
             llmResponses.Add(llmResponse);
-            prompt = prompt.Replace(fullTag, llmResponse);
+            prompt = prompt.Replace(fullTag, printResponse ? llmResponse : "");
         }
 
         prompt = ResolveMpresponseReferences(prompt, llmResponses, logStandalone: true);
@@ -97,15 +101,15 @@ public class PromptHandler
             if (string.IsNullOrEmpty(response))
             {
                 Logs.Error($"MagicPromptExtension.PromptHandler: empty response from LLM for tag #{tagIndex}: {fullTag}");
-                return content; // Fall back to original content
+                return content;
             }
 
-            return response;
+            return ApplyPostFilter(response, userInput);
         }
         catch (Exception ex)
         {
             Logs.Error($"MagicPromptExtension.PromptHandler: LLM call failed for tag #{tagIndex} '{fullTag}': {ex.Message}");
-            return content; // Fall back to original content
+            return content;
         }
     }
 
@@ -137,6 +141,47 @@ public class PromptHandler
 
         var llmResponse = resp?["response"]?.ToString();
         return string.IsNullOrWhiteSpace(llmResponse) ? null : llmResponse;
+    }
+
+    /// <summary>
+    /// Parses the optional mpprompt instruction specifier (the [...] section).
+    /// Supports a trailing ", false" flag to suppress printing the LLM response while still recording it for &lt;mpresponse:N&gt;.
+    /// Examples:
+    /// - [false] => default instruction, don't print
+    /// - [Action,false] => instruction "Action", don't print
+    /// - [Action] => instruction "Action", print
+    /// </summary>
+    private static void ParseInstructionSpecifier(string raw, out string instructionId, out bool printResponse)
+    {
+        instructionId = null;
+        printResponse = true;
+
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return;
+        }
+
+        var trimmed = raw.Trim();
+        if (trimmed.Equals("false", StringComparison.OrdinalIgnoreCase))
+        {
+            printResponse = false;
+            return;
+        }
+
+        int commaIndex = trimmed.LastIndexOf(',');
+        if (commaIndex >= 0)
+        {
+            var tail = trimmed[(commaIndex + 1)..].Trim();
+            if (tail.Equals("false", StringComparison.OrdinalIgnoreCase))
+            {
+                printResponse = false;
+                var idPart = trimmed[..commaIndex].Trim();
+                instructionId = string.IsNullOrWhiteSpace(idPart) ? null : idPart;
+                return;
+            }
+        }
+
+        instructionId = trimmed;
     }
 
     /// <summary>
@@ -185,6 +230,26 @@ public class PromptHandler
     private static string StripMpresponseTags(string prompt)
     {
         return MpresponseRegex.Replace(prompt, "");
+    }
+
+    private string ApplyPostFilter(string response, T2IParamInput userInput)
+    {
+        string postFilter = userInput.Get(_paramPostFilter, defVal: string.Empty);
+        if (string.IsNullOrEmpty(postFilter))
+        {
+            return response;
+        }
+
+        string[] filters = postFilter.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        foreach (string filter in filters)
+        {
+            if (!string.IsNullOrEmpty(filter))
+            {
+                response = response.Replace(filter, "", StringComparison.Ordinal);
+            }
+        }
+
+        return response.Trim();
     }
 
     private static void FinalizePrompt(string prompt, string originalMpprompt, T2IParamInput userInput)

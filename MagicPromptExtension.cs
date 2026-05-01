@@ -14,6 +14,7 @@ public class MagicPromptExtension : Extension
     private static T2IRegisteredParam<bool> _paramUseCache;
     private static T2IRegisteredParam<string> _paramModelId;
     private static T2IRegisteredParam<string> _paramInstructions;
+    private static T2IRegisteredParam<string> _paramPostFilter;
 
     public override void OnPreInit()
     {
@@ -88,6 +89,17 @@ public class MagicPromptExtension : Extension
             GetValues: ModelListProvider.GetInstructionList
         ));
 
+        _paramPostFilter = T2IParamTypes.Register<string>(new T2IParamType(
+            Name: "MP Post-Filter",
+            Description: "Strings to strip from LLM responses, one per line. Each line is removed as a literal match from every response.",
+            Default: "",
+            IgnoreIf: "",
+            Group: paramGroup,
+            OrderPriority: 5,
+            ViewType: ParamViewType.BIG,
+            Toggleable: true
+        ));
+
         PromptRegion.RegisterCustomPrefix("mpprompt");
         PromptRegion.RegisterCustomPrefix("mpresponse");
         T2IPromptHandling.PromptTagPostProcessors["mpprompt"] = ProcessMppromptTag;
@@ -116,7 +128,7 @@ public class MagicPromptExtension : Extension
     {
         T2IParamInput.LateSpecialParameterHandlers.Add(userInput =>
         {
-            var handler = new PromptHandler(_promptCache, _paramUseCache, _paramModelId, _paramInstructions);
+            var handler = new PromptHandler(_promptCache, _paramUseCache, _paramModelId, _paramInstructions, _paramPostFilter);
             handler.ProcessPrompt(userInput);
         });
     }
