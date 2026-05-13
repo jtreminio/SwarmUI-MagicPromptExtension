@@ -30,11 +30,18 @@ public static class ModelListProvider
                 return defaultResponse;
             }
 
+            HashSet<string> blockedIds = LoadBlockedModelIdsForActiveBackend();
+
             var list = new List<string>(models.Count);
             foreach (var m in models)
             {
                 var modelId = m?["model"]?.ToString();
                 if (string.IsNullOrWhiteSpace(modelId))
+                {
+                    continue;
+                }
+
+                if (blockedIds.Contains(modelId))
                 {
                     continue;
                 }
@@ -57,6 +64,49 @@ public static class ModelListProvider
         {
             return defaultResponse;
         }
+    }
+
+    private static HashSet<string> LoadBlockedModelIdsForActiveBackend()
+    {
+        var blocked = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            var settingsResponse = WebAPI.SessionSettings.GetMagicPromptSettings()
+                .GetAwaiter()
+                .GetResult();
+            if (settingsResponse?["success"]?.Value<bool>() != true)
+            {
+                return blocked;
+            }
+
+            var settings = settingsResponse["settings"] as JObject;
+            var backend = settings?["backend"]?.ToString()?.ToLowerInvariant();
+            if (string.IsNullOrEmpty(backend))
+            {
+                return blocked;
+            }
+
+            var blockedMap = settings["blockedModels"] as JObject;
+            var blockedArr = blockedMap?[backend] as JArray;
+            if (blockedArr == null)
+            {
+                return blocked;
+            }
+
+            foreach (var entry in blockedArr)
+            {
+                var id = entry?.ToString()?.Trim();
+                if (!string.IsNullOrEmpty(id))
+                {
+                    blocked.Add(id);
+                }
+            }
+        }
+        catch
+        {
+            // fall through with whatever ids we collected
+        }
+        return blocked;
     }
 
     public static List<string> GetInstructionList(Session session)
