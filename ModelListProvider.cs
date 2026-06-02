@@ -30,9 +30,11 @@ public static class ModelListProvider
                 return defaultResponse;
             }
 
-            HashSet<string> blockedIds = LoadBlockedModelIdsForActiveBackend();
+            HashSet<string> blockedIds = LoadBackendModelIdsForActive("blockedModels");
+            HashSet<string> favoritedIds = LoadBackendModelIdsForActive("favoritedModels");
 
-            var list = new List<string>(models.Count);
+            var favorites = new List<string>();
+            var others = new List<string>();
             foreach (var m in models)
             {
                 var modelId = m?["model"]?.ToString();
@@ -55,9 +57,20 @@ public static class ModelListProvider
                 string costOut = m?["costOut"]?.ToString();
                 string displayName = $"{name} ‧ {(string.IsNullOrWhiteSpace(costOut) ? "—" : costOut.Trim())}";
 
-                list.Add($"{modelId}///{displayName}");
+                string entry = $"{modelId}///{displayName}";
+                if (favoritedIds.Contains(modelId))
+                {
+                    favorites.Add(entry);
+                }
+                else
+                {
+                    others.Add(entry);
+                }
             }
 
+            var list = new List<string>(favorites.Count + others.Count);
+            list.AddRange(favorites);
+            list.AddRange(others);
             return list.Count > 0 ? list : defaultResponse;
         }
         catch
@@ -66,9 +79,9 @@ public static class ModelListProvider
         }
     }
 
-    private static HashSet<string> LoadBlockedModelIdsForActiveBackend()
+    private static HashSet<string> LoadBackendModelIdsForActive(string settingsKey)
     {
-        var blocked = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         try
         {
             var settingsResponse = WebAPI.SessionSettings.GetMagicPromptSettings()
@@ -76,29 +89,29 @@ public static class ModelListProvider
                 .GetResult();
             if (settingsResponse?["success"]?.Value<bool>() != true)
             {
-                return blocked;
+                return ids;
             }
 
             var settings = settingsResponse["settings"] as JObject;
             var backend = settings?["backend"]?.ToString()?.ToLowerInvariant();
             if (string.IsNullOrEmpty(backend))
             {
-                return blocked;
+                return ids;
             }
 
-            var blockedMap = settings["blockedModels"] as JObject;
-            var blockedArr = blockedMap?[backend] as JArray;
-            if (blockedArr == null)
+            var map = settings[settingsKey] as JObject;
+            var arr = map?[backend] as JArray;
+            if (arr == null)
             {
-                return blocked;
+                return ids;
             }
 
-            foreach (var entry in blockedArr)
+            foreach (var entry in arr)
             {
                 var id = entry?.ToString()?.Trim();
                 if (!string.IsNullOrEmpty(id))
                 {
-                    blocked.Add(id);
+                    ids.Add(id);
                 }
             }
         }
@@ -106,7 +119,7 @@ public static class ModelListProvider
         {
             // fall through with whatever ids we collected
         }
-        return blocked;
+        return ids;
     }
 
     public static List<string> GetInstructionList(Session session)

@@ -34,10 +34,12 @@ public class MagicPromptExtension : Extension
         ScriptFiles.Add("Assets/vision.js");
         ScriptFiles.Add("Assets/chat.js");
         ScriptFiles.Add("Assets/settings.js");
+        ScriptFiles.Add("Assets/modeldropdown.js");
         StyleSheetFiles.Add("Assets/magicprompt.css");
         StyleSheetFiles.Add("Assets/vision.css");
         StyleSheetFiles.Add("Assets/chat.css");
         StyleSheetFiles.Add("Assets/settings.css");
+        StyleSheetFiles.Add("Assets/modeldropdown.css");
     }
 
     private static void RegisterT2IParameters()

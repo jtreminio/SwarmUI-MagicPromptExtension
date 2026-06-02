@@ -25,10 +25,26 @@ public class SessionSettings : MagicPromptAPI
     /// <summary>Loads <c>blockedModels</c>: each known backend maps to distinct non-empty model id strings.</summary>
     private static void NormalizeBlockedModels(JObject settings)
     {
-        if (settings["blockedModels"] is not JObject backendsMap)
+        NormalizeBackendModelIdMap(settings, "blockedModels");
+    }
+
+    /// <summary>Loads <c>favoritedModels</c>: each known backend maps to distinct non-empty model id strings.</summary>
+    private static void NormalizeFavoritedModels(JObject settings)
+    {
+        NormalizeBackendModelIdMap(settings, "favoritedModels");
+    }
+
+    /// <summary>
+    /// Coerces <paramref name="settingsKey"/> into the canonical shape:
+    /// <c>{ &lt;backend&gt;: ["id", ...] }</c> with every known backend present,
+    /// duplicates removed (case-insensitive), and unknown backend keys dropped.
+    /// </summary>
+    private static void NormalizeBackendModelIdMap(JObject settings, string settingsKey)
+    {
+        if (settings[settingsKey] is not JObject backendsMap)
         {
-            settings["blockedModels"] = new JObject();
-            backendsMap = settings["blockedModels"] as JObject;
+            settings[settingsKey] = new JObject();
+            backendsMap = settings[settingsKey] as JObject;
         }
 
         foreach (string key in BlockedModelBackendKeys)
@@ -73,6 +89,53 @@ public class SessionSettings : MagicPromptAPI
             {
                 backendsMap.Remove(leftover.Name);
             }
+        }
+    }
+
+    /// <summary>
+    /// Ensures a model id never lives in both <c>blockedModels</c> and <c>favoritedModels</c>
+    /// for the same backend — blocked wins, so a blocked id is removed from favorites.
+    /// </summary>
+    private static void EnforceBlockFavoriteExclusivity(JObject settings)
+    {
+        if (settings["blockedModels"] is not JObject blockedMap ||
+            settings["favoritedModels"] is not JObject favoritedMap)
+        {
+            return;
+        }
+        foreach (string key in BlockedModelBackendKeys)
+        {
+            if (blockedMap[key] is not JArray blockedArr || favoritedMap[key] is not JArray favoritedArr)
+            {
+                continue;
+            }
+            HashSet<string> blockedIds = [];
+            foreach (JToken t in blockedArr)
+            {
+                string id = t?.ToString()?.Trim();
+                if (!string.IsNullOrEmpty(id))
+                {
+                    blockedIds.Add(id.ToLowerInvariant());
+                }
+            }
+            if (blockedIds.Count == 0)
+            {
+                continue;
+            }
+            JArray filtered = [];
+            foreach (JToken t in favoritedArr)
+            {
+                string id = t?.ToString()?.Trim();
+                if (string.IsNullOrEmpty(id))
+                {
+                    continue;
+                }
+                if (!blockedIds.Contains(id.ToLowerInvariant()))
+                {
+                    filtered.Add(id);
+                }
+            }
+            favoritedMap[key] = filtered;
         }
     }
 
@@ -167,6 +230,15 @@ public class SessionSettings : MagicPromptAPI
             ["openai"] = new JArray(),
             ["anthropic"] = new JArray(),
             ["grok"] = new JArray()
+        },
+        ["favoritedModels"] = new JObject
+        {
+            ["ollama"] = new JArray(),
+            ["openrouter"] = new JArray(),
+            ["openaiapi"] = new JArray(),
+            ["openai"] = new JArray(),
+            ["anthropic"] = new JArray(),
+            ["grok"] = new JArray()
         }
     };
 
@@ -211,6 +283,8 @@ public class SessionSettings : MagicPromptAPI
                 settings["backends"] = backendsConfig;
             }
             NormalizeBlockedModels(settings);
+            NormalizeFavoritedModels(settings);
+            EnforceBlockFavoriteExclusivity(settings);
             return CreateSuccessResponse(null, null, settings);
         }
         catch (Exception ex)
@@ -343,6 +417,8 @@ public class SessionSettings : MagicPromptAPI
             newSettings["backends"]["grok"]["baseurl"] = "https://api.x.ai";
 
             NormalizeBlockedModels(newSettings);
+            NormalizeFavoritedModels(newSettings);
+            EnforceBlockFavoriteExclusivity(newSettings);
 
             // Don't save API keys in settings as they are now stored in UserUpstreamApiKeys
             JObject backends = newSettings["backends"] as JObject;

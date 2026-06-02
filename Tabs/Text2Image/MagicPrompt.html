@@ -225,6 +225,26 @@
                                             <div id="blockedModelsPickerList" class="list-group list-group-flush mp-blocked-models-picker overflow-auto"></div>
                                         </div>
                                     </div>
+                                    <div class="form-group">
+                                        <label class="form-label" for="favoritedModelsCollapseToggle">Favorited models</label>
+                                        <p class="small text-muted mb-2 mp-blocked-help">Pinned to the top of the Model list for this LLM backend. Click a chip to remove.</p>
+                                        <div id="favoritedModelsChips" class="mp-favorited-chips mb-2" role="list" aria-label="Favorited models"></div>
+                                        <p id="favoritedModelsEmptyHint" class="small text-muted mb-2" hidden>No favorited models for this backend.</p>
+                                        <button type="button" class="btn btn-outline-secondary btn-sm" id="favoritedModelsCollapseToggle" data-bs-toggle="collapse" data-bs-target="#favoritedModelsPickerCollapse" aria-expanded="false" aria-controls="favoritedModelsPickerCollapse">Add favorited models…</button>
+                                        <div class="collapse mt-2" id="favoritedModelsPickerCollapse">
+                                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                                <span class="small text-muted">Choose models to pin to the top</span>
+                                                <button type="button" class="btn-close" aria-label="Close favorited models picker" id="favoritedModelsPickerCloseBtn"></button>
+                                            </div>
+                                            <div class="d-flex flex-wrap align-items-stretch gap-2 mb-2">
+                                                <div class="input-group input-group-sm flex-grow-1" style="min-width: 140px;">
+                                                    <span class="input-group-text" id="favoritedModelsFilterLabel">Filter</span>
+                                                    <input type="search" class="form-control" id="favoritedModelsFilterInput" autocomplete="off" placeholder="Search models" aria-describedby="favoritedModelsFilterLabel">
+                                                </div>
+                                            </div>
+                                            <div id="favoritedModelsPickerList" class="list-group list-group-flush mp-blocked-models-picker overflow-auto"></div>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>

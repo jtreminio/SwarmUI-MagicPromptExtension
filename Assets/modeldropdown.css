@@ -1,0 +1,154 @@
+/* Custom dropdown that replaces the native <select id="input_mpmodelid">.
+   See Assets/modeldropdown.js for behavior. */
+
+/* Hide SwarmUI's auto-generated select. We keep the element in the DOM so the
+   T2I parameter framework can still read its value, but our trigger button
+   takes over the visual slot. */
+#input_mpmodelid {
+    display: none !important;
+}
+
+.mp-model-dropdown-trigger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-start;
+    width: fit-content;
+    min-width: 8rem;
+    max-width: 100%;
+    margin-bottom: 0;
+    padding: 0.25rem 1.75rem 0.25rem 0.5rem;
+    border: 1px solid var(--shadow);
+    border-radius: 0.5rem;
+    background-color: var(--background);
+    color: var(--text);
+    cursor: pointer;
+    text-align: left;
+    font-variant-numeric: tabular-nums;
+    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23888' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M2 5l6 6 6-6'/%3e%3c/svg%3e");
+    background-repeat: no-repeat;
+    background-position: right 0.5rem center;
+    background-size: 0.8em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.mp-model-dropdown-trigger:hover {
+    background-color: var(--background-soft);
+}
+
+.mp-model-dropdown-trigger.mp-model-dropdown-empty {
+    color: var(--text-soft);
+    font-style: italic;
+}
+
+.mp-model-dropdown-popover {
+    background-color: var(--background);
+    border: 1px solid var(--shadow);
+    border-radius: 0.5rem;
+    padding: 0.25rem;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+
+.mp-model-dropdown-search {
+    margin-bottom: 0.25rem;
+}
+
+.mp-model-dropdown-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.25rem 0.4rem;
+    border-radius: 0.25rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.mp-model-dropdown-row-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mp-model-dropdown-star {
+    flex: 0 0 auto;
+    width: 1.5rem;
+    height: 1.5rem;
+    padding: 0;
+    line-height: 1;
+    font-size: 1.05rem;
+    color: var(--text-soft);
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 0.25rem;
+    cursor: pointer;
+    transition: color 0.15s, background-color 0.15s, border-color 0.15s;
+}
+
+.mp-model-dropdown-star:hover,
+.mp-model-dropdown-star:focus {
+    color: #f5b301;
+    background-color: color-mix(in srgb, #f5b301 18%, transparent);
+    border-color: #f5b301;
+    outline: none;
+}
+
+.mp-model-dropdown-star-active {
+    color: #f5b301;
+}
+
+.mp-model-dropdown-row-favorited .mp-model-dropdown-row-label {
+    font-weight: 600;
+}
+
+.mp-model-dropdown-divider {
+    height: 1px;
+    margin: 0.25rem 0;
+    background-color: var(--shadow);
+    pointer-events: none;
+}
+
+.mp-model-dropdown-remove {
+    flex: 0 0 auto;
+    width: 1.5rem;
+    height: 1.5rem;
+    padding: 0;
+    line-height: 1;
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--text-soft);
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 0.25rem;
+    cursor: pointer;
+    transition: color 0.15s, background-color 0.15s, border-color 0.15s;
+}
+
+.mp-model-dropdown-remove:hover,
+.mp-model-dropdown-remove:focus {
+    color: white;
+    background-color: var(--danger-color, #dc3545);
+    border-color: var(--danger-color, #dc3545);
+    outline: none;
+}
+
+/* Keep the Remove button readable when the row is hovered/selected and the
+   row background turns to emphasis color. */
+.sui_popover_model_button:hover .mp-model-dropdown-remove,
+.sui_popover_model_button_selected .mp-model-dropdown-remove {
+    color: var(--emphasis-text);
+}
+
+.sui_popover_model_button:hover .mp-model-dropdown-remove:hover,
+.sui_popover_model_button_selected .mp-model-dropdown-remove:hover {
+    color: white;
+}
+
+.mp-model-dropdown-empty-msg,
+.mp-model-dropdown-no-matches {
+    padding: 0.5rem;
+    color: var(--text-soft);
+    font-style: italic;
+    text-align: center;
+}

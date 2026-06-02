@@ -76,6 +76,14 @@ if (!window.MP) {
                 anthropic: [],
                 grok: [],
             },
+            favoritedModels: {
+                ollama: [],
+                openrouter: [],
+                openaiapi: [],
+                openai: [],
+                anthropic: [],
+                grok: [],
+            },
             // Instructions
             instructions: {
                 chat: '',

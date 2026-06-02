@@ -66,7 +66,7 @@ const CHAT_BACKEND_KEYS = [
 /**
  * @returns {Object<string, string[]>}
  */
-function emptyBlockedModelsMap() {
+function emptyModelIdMap() {
   let out = {};
   for (let i = 0; i < CHAT_BACKEND_KEYS.length; i++) {
     out[CHAT_BACKEND_KEYS[i]] = [];
@@ -74,12 +74,15 @@ function emptyBlockedModelsMap() {
   return out;
 }
 
+// Legacy alias retained because external callers reference these names.
+const emptyBlockedModelsMap = emptyModelIdMap;
+
 /**
  * @param {*} raw
  * @returns {Object<string, string[]>}
  */
-function normalizeBlockedModelsFromServer(raw) {
-  let out = emptyBlockedModelsMap();
+function normalizeModelIdMapFromServer(raw) {
+  let out = emptyModelIdMap();
   if (!raw || typeof raw !== 'object') {
     return out;
   }
@@ -104,12 +107,14 @@ function normalizeBlockedModelsFromServer(raw) {
   return out;
 }
 
+const normalizeBlockedModelsFromServer = normalizeModelIdMapFromServer;
+
 /**
- * @param {*} from MP.settings.blockedModels
+ * @param {*} from MP.settings.blockedModels or MP.settings.favoritedModels
  * @returns {Object<string, string[]>}
  */
-function cloneBlockedModelsForSave(from) {
-  let base = from && typeof from === 'object' ? from : emptyBlockedModelsMap();
+function cloneModelIdMapForSave(from) {
+  let base = from && typeof from === 'object' ? from : emptyModelIdMap();
   let out = {};
   for (let i = 0; i < CHAT_BACKEND_KEYS.length; i++) {
     let k = CHAT_BACKEND_KEYS[i];
@@ -118,6 +123,8 @@ function cloneBlockedModelsForSave(from) {
   }
   return out;
 }
+
+const cloneBlockedModelsForSave = cloneModelIdMapForSave;
 
 /** Backend id matching the LLM settings radios. */
 function getSelectedChatBackendIdFromDom() {
@@ -128,32 +135,163 @@ function getSelectedChatBackendIdFromDom() {
   return MP.settings.backend || 'ollama';
 }
 
-function persistBlockedModelsToServerInner() {
+function persistModelPrefsToServerInner() {
   genericRequest(
     'SaveMagicPromptSettings',
     {
       settings: {
-        blockedModels: cloneBlockedModelsForSave(MP.settings.blockedModels),
+        blockedModels: cloneModelIdMapForSave(MP.settings.blockedModels),
+        favoritedModels: cloneModelIdMapForSave(MP.settings.favoritedModels),
       },
     },
     (data) => {
       if (data.success && data.settings) {
-        MP.settings.blockedModels = normalizeBlockedModelsFromServer(
+        MP.settings.blockedModels = normalizeModelIdMapFromServer(
           data.settings.blockedModels
         );
+        MP.settings.favoritedModels = normalizeModelIdMapFromServer(
+          data.settings.favoritedModels
+        );
       } else if (!data.success) {
-        console.warn('Blocked models save failed:', data.error);
+        console.warn('Model prefs save failed:', data.error);
       }
       updateModelListOnLeft();
     },
     0,
     (err) => {
-      console.warn('Blocked models save error:', err);
+      console.warn('Model prefs save error:', err);
     }
   );
 }
 
-const persistBlockedModelsDebounced = debounce(persistBlockedModelsToServerInner, 450);
+const persistModelPrefsDebounced = debounce(persistModelPrefsToServerInner, 450);
+const persistBlockedModelsDebounced = persistModelPrefsDebounced;
+
+function ensureModelIdList(mapKey, backendKey) {
+  if (!MP.settings[mapKey]) {
+    MP.settings[mapKey] = emptyModelIdMap();
+  }
+  if (!Array.isArray(MP.settings[mapKey][backendKey])) {
+    MP.settings[mapKey][backendKey] = [];
+  }
+  return MP.settings[mapKey][backendKey];
+}
+
+function addModelIdToList(mapKey, backendKey, modelId) {
+  let list = ensureModelIdList(mapKey, backendKey);
+  for (let i = 0; i < list.length; i++) {
+    if (list[i] === modelId) {
+      return false;
+    }
+  }
+  list.push(modelId);
+  return true;
+}
+
+function removeModelIdFromList(mapKey, backendKey, modelId) {
+  if (!MP.settings[mapKey] || !Array.isArray(MP.settings[mapKey][backendKey])) {
+    return false;
+  }
+  let before = MP.settings[mapKey][backendKey];
+  let after = before.filter((x) => x !== modelId);
+  if (after.length === before.length) {
+    return false;
+  }
+  MP.settings[mapKey][backendKey] = after;
+  return true;
+}
+
+function refreshAfterPrefsMutation() {
+  if (typeof renderBlockedModelChips === 'function') {
+    renderBlockedModelChips();
+  }
+  if (typeof renderFavoritedModelChips === 'function') {
+    renderFavoritedModelChips();
+  }
+  reapplyChatModelSelectFromCachedCatalog();
+  persistModelPrefsDebounced();
+}
+
+/**
+ * Adds a model id to the blocked list for the given backend (removes it from
+ * favorites if present — the two are mutually exclusive) and refreshes
+ * dependent UI. Duplicates are ignored.
+ * @param {string} backendKey
+ * @param {string} modelId
+ */
+function blockModelId(backendKey, modelId) {
+  if (!backendKey || !modelId) {
+    return;
+  }
+  let added = addModelIdToList('blockedModels', backendKey, modelId);
+  let removedFromFav = removeModelIdFromList('favoritedModels', backendKey, modelId);
+  if (added || removedFromFav) {
+    refreshAfterPrefsMutation();
+  }
+}
+
+/**
+ * Removes a model id from the blocked list. No-op when not blocked.
+ * @param {string} backendKey
+ * @param {string} modelId
+ */
+function unblockModelId(backendKey, modelId) {
+  if (!backendKey || !modelId) {
+    return;
+  }
+  if (removeModelIdFromList('blockedModels', backendKey, modelId)) {
+    refreshAfterPrefsMutation();
+  }
+}
+
+/**
+ * Adds a model id to the favorited list for the given backend (removes it
+ * from the blocked list if present) and refreshes dependent UI. Favorited
+ * models surface at the top of the model dropdown.
+ * @param {string} backendKey
+ * @param {string} modelId
+ */
+function favoriteModelId(backendKey, modelId) {
+  if (!backendKey || !modelId) {
+    return;
+  }
+  let added = addModelIdToList('favoritedModels', backendKey, modelId);
+  let removedFromBlock = removeModelIdFromList('blockedModels', backendKey, modelId);
+  if (added || removedFromBlock) {
+    refreshAfterPrefsMutation();
+  }
+}
+
+/**
+ * Removes a model id from the favorited list. No-op when not favorited.
+ * @param {string} backendKey
+ * @param {string} modelId
+ */
+function unfavoriteModelId(backendKey, modelId) {
+  if (!backendKey || !modelId) {
+    return;
+  }
+  if (removeModelIdFromList('favoritedModels', backendKey, modelId)) {
+    refreshAfterPrefsMutation();
+  }
+}
+
+function isModelFavoritedForBackend(backendKey, modelId) {
+  if (!backendKey || !modelId || !MP.settings.favoritedModels) {
+    return false;
+  }
+  let list = MP.settings.favoritedModels[backendKey];
+  return Array.isArray(list) && list.indexOf(modelId) !== -1;
+}
+
+if (!window.MP) {
+  window.MP = {};
+}
+window.MP.blockModelId = blockModelId;
+window.MP.unblockModelId = unblockModelId;
+window.MP.favoriteModelId = favoriteModelId;
+window.MP.unfavoriteModelId = unfavoriteModelId;
+window.MP.isModelFavoritedForBackend = isModelFavoritedForBackend;
 
 /**
  * OUT (completion) cost string from API, or em dash when unknown.
@@ -300,6 +438,9 @@ function reapplyChatModelSelectFromCachedCatalog() {
   let blocked = new Set(
     (MP.settings.blockedModels && MP.settings.blockedModels[backendId]) || []
   );
+  let favorited = new Set(
+    (MP.settings.favoritedModels && MP.settings.favoritedModels[backendId]) || []
+  );
   let previous = modelSelect.value;
 
   modelSelect.innerHTML = '';
@@ -311,22 +452,34 @@ function reapplyChatModelSelectFromCachedCatalog() {
   let allowedLookup = {};
 
   let firstAllowed = '';
-  for (let i = 0; i < catalog.length; i++) {
-    let row = catalog[i];
-    if (!row || !row.model || seenIds[row.model]) {
-      continue;
-    }
-    if (blocked.has(row.model)) {
-      continue;
-    }
+  // Two-pass build: favorited rows first (in original catalog order), then
+  // the rest. Catalog order within each group is preserved.
+  for (let pass = 0; pass < 2; pass++) {
+    let wantFavorited = pass === 0;
+    for (let i = 0; i < catalog.length; i++) {
+      let row = catalog[i];
+      if (!row || !row.model || seenIds[row.model]) {
+        continue;
+      }
+      if (blocked.has(row.model)) {
+        continue;
+      }
+      let isFav = favorited.has(row.model);
+      if (isFav !== wantFavorited) {
+        continue;
+      }
 
-    seenIds[row.model] = true;
-    let option = new Option(mpModelSelectOptionText(row), row.model);
-    modelSelect.add(option);
+      seenIds[row.model] = true;
+      let option = new Option(mpModelSelectOptionText(row), row.model);
+      if (isFav) {
+        option.dataset.favorited = '1';
+      }
+      modelSelect.add(option);
 
-    allowedLookup[row.model] = true;
-    if (!firstAllowed) {
-      firstAllowed = row.model;
+      allowedLookup[row.model] = true;
+      if (!firstAllowed) {
+        firstAllowed = row.model;
+      }
     }
   }
 
@@ -412,30 +565,11 @@ function rebuildBlockedModelPickerDom() {
     let sid = '' + row.model;
     cb.addEventListener('change', () => {
       let bk = getSelectedChatBackendIdFromDom();
-      if (!MP.settings.blockedModels) {
-        MP.settings.blockedModels = emptyBlockedModelsMap();
-      }
-      if (!Array.isArray(MP.settings.blockedModels[bk])) {
-        MP.settings.blockedModels[bk] = [];
-      }
-      let list = MP.settings.blockedModels[bk];
       if (cb.checked) {
-        let already = false;
-        for (let k = 0; k < list.length; k++) {
-          if (list[k] === sid) {
-            already = true;
-            break;
-          }
-        }
-        if (!already) {
-          list.push(sid);
-        }
+        blockModelId(bk, sid);
       } else {
-        MP.settings.blockedModels[bk] = list.filter((x) => x !== sid);
+        unblockModelId(bk, sid);
       }
-      renderBlockedModelChips();
-      reapplyChatModelSelectFromCachedCatalog();
-      persistBlockedModelsDebounced();
     });
     let txt = document.createElement('span');
     txt.className = 'small text-break mp-blocked-picker-name flex-grow-1';
@@ -527,8 +661,156 @@ function refreshBlockedModelsUI() {
   if (open) {
     rebuildBlockedModelPickerDom();
   }
+  // Favorited models share the same lifecycle (backend change, settings save,
+  // model fetch), so refresh them alongside the blocked UI.
+  refreshFavoritedModelsUI();
+}
 
+/**
+ * Mirror of renderBlockedModelChips for the favorited list. Chips appear in
+ * the Favorited Models section of the settings modal; clicking one removes
+ * the model from favorites.
+ */
+function renderFavoritedModelChips() {
+  let chipsRoot = document.getElementById('favoritedModelsChips');
+  let hint = document.getElementById('favoritedModelsEmptyHint');
+  let backendId = getSelectedChatBackendIdFromDom();
+  if (!chipsRoot) {
+    return;
+  }
+  if (!MP.settings.favoritedModels) {
+    MP.settings.favoritedModels = emptyModelIdMap();
+  }
+  let list = MP.settings.favoritedModels[backendId];
+  chipsRoot.innerHTML = '';
+  if (!Array.isArray(list) || list.length === 0) {
+    chipsRoot.classList.remove('has-chips');
+    if (hint) {
+      hint.hidden = false;
+    }
+    return;
+  }
+  if (hint) {
+    hint.hidden = true;
+  }
+  chipsRoot.classList.add('has-chips');
+  let catalog = MP.cachedChatModelsByBackend && MP.cachedChatModelsByBackend[backendId];
 
+  function lookupRow(modelId) {
+    if (!catalog || !Array.isArray(catalog)) {
+      return null;
+    }
+    for (let i = 0; i < catalog.length; i++) {
+      let r = catalog[i];
+      if (r && r.model === modelId) {
+        return r;
+      }
+    }
+    return null;
+  }
+
+  for (let j = 0; j < list.length; j++) {
+    let modelId = list[j];
+    let row = lookupRow(modelId);
+    let baseName = row ? row.name || row.model : modelId;
+    let btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn btn-sm btn-outline-secondary mp-favorited-chip mb-1 me-1';
+    btn.dataset.modelId = modelId;
+    btn.setAttribute('role', 'listitem');
+    let removeLabel = typeof modelId === 'string'
+      ? 'Remove ' + modelId + ' from favorites'
+      : 'Remove from favorites';
+    btn.setAttribute('aria-label', removeLabel);
+    let chipText = `★ ${baseName} ‧ OUT ${mpModelCostOutLabel(row)}`;
+    btn.title = chipText;
+    btn.textContent = chipText;
+    chipsRoot.appendChild(btn);
+  }
+}
+
+function refreshFavoritedModelsUI() {
+  renderFavoritedModelChips();
+  let collapseEl = document.getElementById('favoritedModelsPickerCollapse');
+  let open = !!(collapseEl && collapseEl.classList.contains('show'));
+  if (open) {
+    rebuildFavoritedModelPickerDom();
+  }
+}
+
+/**
+ * Mirror of rebuildBlockedModelPickerDom for favorites. Uses the same
+ * cachedChatModelsByBackend catalog and the favoritedModels filter input.
+ */
+function rebuildFavoritedModelPickerDom() {
+  let listRoot = document.getElementById('favoritedModelsPickerList');
+  let filterEl = document.getElementById('favoritedModelsFilterInput');
+  let backendId = getSelectedChatBackendIdFromDom();
+  if (!listRoot) {
+    return;
+  }
+  listRoot.innerHTML = '';
+  let queryText = '';
+  if (filterEl && typeof filterEl.value === 'string') {
+    queryText = filterEl.value.trim().toLowerCase();
+  }
+  let catalog = MP.cachedChatModelsByBackend && MP.cachedChatModelsByBackend[backendId];
+  if (!Array.isArray(catalog)) {
+    let emptyHint = document.createElement('div');
+    emptyHint.className = 'list-group-item text-muted small';
+    emptyHint.textContent = 'Load models first using the dropdown above once your backend is connected.';
+    listRoot.appendChild(emptyHint);
+    return;
+  }
+
+  let sortedCatalog = sortBlockedModelsPickerCatalog(catalog);
+
+  if (!MP.settings.favoritedModels) {
+    MP.settings.favoritedModels = emptyModelIdMap();
+  }
+  let favoritedArr = MP.settings.favoritedModels[backendId] || [];
+  let favoritedSet = new Set(favoritedArr);
+
+  for (let i = 0; i < sortedCatalog.length; i++) {
+    let row = sortedCatalog[i];
+    if (!row || !row.model) {
+      continue;
+    }
+    let label = row.name || row.model;
+    if (queryText) {
+      let lowLabel = ('' + label).toLowerCase();
+      let lowId = ('' + row.model).toLowerCase();
+      if (lowLabel.indexOf(queryText) === -1 && lowId.indexOf(queryText) === -1) {
+        continue;
+      }
+    }
+    let wrap = document.createElement('label');
+    wrap.className =
+      'list-group-item list-group-item-action d-flex align-items-center gap-2 w-100 mb-0 mp-blocked-picker-row';
+    let cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.className = 'form-check-input mt-0 flex-shrink-0';
+    cb.checked = favoritedSet.has(row.model);
+    let sid = '' + row.model;
+    cb.addEventListener('change', () => {
+      let bk = getSelectedChatBackendIdFromDom();
+      if (cb.checked) {
+        favoriteModelId(bk, sid);
+      } else {
+        unfavoriteModelId(bk, sid);
+      }
+    });
+    let txt = document.createElement('span');
+    txt.className = 'small text-break mp-blocked-picker-name flex-grow-1';
+    txt.textContent = label;
+    let costCell = document.createElement('span');
+    costCell.className = 'small text-muted mp-blocked-picker-out-cost flex-shrink-0';
+    costCell.textContent = `OUT ${mpModelCostOutLabel(row)}`;
+    wrap.appendChild(cb);
+    wrap.appendChild(txt);
+    wrap.appendChild(costCell);
+    listRoot.appendChild(wrap);
+  }
 }
 
 /** One-time checkbox / chip / collapse listeners */
@@ -548,22 +830,82 @@ function initBlockedModelsSettingsUi() {
         return;
       }
       let sid = btn.dataset.modelId || '';
-      if (!sid || !MP.settings.blockedModels) {
+      if (!sid) {
         return;
       }
       let bk = getSelectedChatBackendIdFromDom();
-      let listRef = MP.settings.blockedModels[bk];
-      if (!Array.isArray(listRef)) {
+      unblockModelId(bk, sid);
+      let pickerEl = document.getElementById('blockedModelsPickerCollapse');
+      if (pickerEl && pickerEl.classList.contains('show')) {
+        rebuildBlockedModelPickerDom();
+      }
+    });
+  }
+
+  let favChipsRoot = document.getElementById('favoritedModelsChips');
+  if (favChipsRoot) {
+    favChipsRoot.addEventListener('click', (ev) => {
+      let t = ev.target;
+      let btn =
+        typeof t.closest === 'function' ? t.closest('.mp-favorited-chip') : null;
+      if (!btn || btn.tagName !== 'BUTTON') {
         return;
       }
-      MP.settings.blockedModels[bk] = listRef.filter((x) => x !== sid);
-      persistBlockedModelsDebounced();
-      renderBlockedModelChips();
-      rebuildBlockedModelPickerDom();
-      reapplyChatModelSelectFromCachedCatalog();
+      let sid = btn.dataset.modelId || '';
+      if (!sid) {
+        return;
+      }
+      let bk = getSelectedChatBackendIdFromDom();
+      unfavoriteModelId(bk, sid);
+      let pickerEl = document.getElementById('favoritedModelsPickerCollapse');
+      if (pickerEl && pickerEl.classList.contains('show')) {
+        rebuildFavoritedModelPickerDom();
+      }
     });
+  }
 
+  let favFilterEl = document.getElementById('favoritedModelsFilterInput');
+  if (favFilterEl) {
+    favFilterEl.addEventListener(
+      'input',
+      debounce(() => {
+        rebuildFavoritedModelPickerDom();
+      }, 220)
+    );
+  }
 
+  let favPickerCollapse = document.getElementById('favoritedModelsPickerCollapse');
+  let closeFavPickerBtn = document.getElementById('favoritedModelsPickerCloseBtn');
+  if (
+    closeFavPickerBtn &&
+    favPickerCollapse &&
+    typeof bootstrap !== 'undefined' &&
+    bootstrap.Collapse
+  ) {
+    closeFavPickerBtn.addEventListener('click', () => {
+      let inst = bootstrap.Collapse.getInstance(favPickerCollapse);
+      if (!inst) {
+        inst = new bootstrap.Collapse(favPickerCollapse, { toggle: false });
+      }
+      inst.hide();
+      let toggleBtn = document.getElementById('favoritedModelsCollapseToggle');
+      if (toggleBtn && typeof toggleBtn.focus === 'function') {
+        toggleBtn.focus();
+      }
+    });
+  }
+
+  if (favPickerCollapse && typeof favPickerCollapse.addEventListener === 'function') {
+    favPickerCollapse.addEventListener('shown.bs.collapse', () => {
+      rebuildFavoritedModelPickerDom();
+    });
+    favPickerCollapse.addEventListener('hidden.bs.collapse', () => {
+      let fi = document.getElementById('favoritedModelsFilterInput');
+      if (fi) {
+        fi.value = '';
+      }
+      refreshFavoritedModelsUI();
+    });
   }
 
   let filterEl = document.getElementById('blockedModelsFilterInput');
@@ -664,8 +1006,11 @@ async function loadSettings() {
             visionmodel: serverSettings.visionmodel || '',
             linkChatAndVisionModels:
               serverSettings.linkChatAndVisionModels !== false, // Default to true if not set
-            blockedModels: normalizeBlockedModelsFromServer(
+            blockedModels: normalizeModelIdMapFromServer(
               serverSettings.blockedModels
+            ),
+            favoritedModels: normalizeModelIdMapFromServer(
+              serverSettings.favoritedModels
             ),
             // Backends - merge using spread operator which does a "deep merge" of two objects
             backends: {
@@ -805,7 +1150,8 @@ async function saveSettings(skipFeatureMappings = false) {
         },
       },
       instructions: MP.settings.instructions,
-      blockedModels: cloneBlockedModelsForSave(MP.settings.blockedModels),
+      blockedModels: cloneModelIdMapForSave(MP.settings.blockedModels),
+      favoritedModels: cloneModelIdMapForSave(MP.settings.favoritedModels),
     };
     // Update MP.settings with the new values
     MP.settings = settings;
@@ -1031,14 +1377,29 @@ function updateModelListOnLeft() {
     listOfModels.innerHTML = '';
     Array.from(modelSelect.options).forEach(opt => {
       const option = new Option(opt.text, opt.value);
+      if (opt.dataset && opt.dataset.favorited === '1') {
+        option.dataset.favorited = '1';
+      }
       listOfModels.add(option);
     });
 
+    // Preserve the prior instruction selection across rebuilds — instructions
+    // have no separate source-of-truth element, so wiping and re-adding the
+    // options here would otherwise drop the user's choice back to the first
+    // option whenever the model list refreshes (e.g. when blocking a model).
+    const previousInstructionValue = listOfInstructions.value;
     listOfInstructions.innerHTML = '';
     enhanceInstructions.forEach(instruction => {
       const option = new Option(instruction.title, instruction.id);
       listOfInstructions.add(option);
     });
+    if (previousInstructionValue) {
+      const stillAvailable = Array.from(listOfInstructions.options)
+        .some((o) => o.value === previousInstructionValue);
+      if (stillAvailable) {
+        listOfInstructions.value = previousInstructionValue;
+      }
+    }
 
     // Mirror current selection
     listOfModels.value = modelSelect.value || '';
