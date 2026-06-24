@@ -48,8 +48,10 @@ public static class BackendSchema
         return type switch
         {
             "ollama" => OllamaRequestBody(content, model, messageType, seed),
-            "grok" => OpenAICompatibleRequestBody(content, model, messageType, preferPngForBase64: true, seed),
-            "openai" or "openaiapi" or "openrouter" => OpenAICompatibleRequestBody(content, model, messageType, preferPngForBase64: false, seed),
+            "grok" => OpenAICompatibleRequestBody(content, model, messageType, preferPngForBase64: true, disableReasoning: false, seed),
+            "openai" or "openaiapi" => OpenAICompatibleRequestBody(content, model, messageType, preferPngForBase64: false, disableReasoning: false, seed),
+            // OpenRouter silently routes many reasoning-capable models; disable reasoning explicitly so we don't waste tokens on it.
+            "openrouter" => OpenAICompatibleRequestBody(content, model, messageType, preferPngForBase64: false, disableReasoning: true, seed),
             "anthropic" => AnthropicRequestBody(content, model, messageType),
             _ => throw new ArgumentException($"Unsupported backend type: {type}")
         };
@@ -139,7 +141,7 @@ public static class BackendSchema
     }
 
     /// <summary>Generates a request body for OpenAI and compatible backends.</summary>
-    private static object OpenAICompatibleRequestBody(MessageContent content, string model, MessageType messageType, bool preferPngForBase64, long seed = -1)
+    private static object OpenAICompatibleRequestBody(MessageContent content, string model, MessageType messageType, bool preferPngForBase64, bool disableReasoning, long seed = -1)
     {
         List<object> messages = [];
         // Add system message if instructions exist
@@ -147,6 +149,15 @@ public static class BackendSchema
         {
             messages.Add(new { role = "system", content = content.Instructions });
         }
+        // Built as a dictionary (rather than an anonymous type) so we can conditionally add fields
+        // like "reasoning" below. System.Text.Json serializes this to the same JSON shape.
+        Dictionary<string, object> body = new()
+        {
+            ["model"] = model,
+            ["temperature"] = 1.0,
+            ["max_tokens"] = 1000,
+            ["stream"] = false
+        };
         if (messageType == MessageType.Vision && content.Media?.Any() == true)
         {
             List<object> contentList = [];
@@ -171,53 +182,24 @@ public static class BackendSchema
                 role = "user",
                 content = contentList
             });
-
-            if (seed != -1)
-            {
-                return new
-                {
-                    model,
-                    messages = messages.ToArray(),
-                    max_tokens = 1000,
-                    temperature = 1.0,
-                    stream = false,
-                    seed
-                };
-            }
-
-            return new
-            {
-                model,
-                messages = messages.ToArray(),
-                max_tokens = 1000,
-                temperature = 1.0,
-                stream = false
-            };
         }
-        messages.Add(new { role = "user", content = content.Text });
-
+        else
+        {
+            messages.Add(new { role = "user", content = content.Text });
+            body["top_p"] = 0.9;
+        }
+        body["messages"] = messages.ToArray();
         if (seed != -1)
         {
-            return new
-            {
-                model,
-                messages = messages.ToArray(),
-                max_tokens = 1000,
-                temperature = 1.0,
-                stream = false,
-                seed
-            };
+            body["seed"] = seed;
         }
-
-        return new
+        if (disableReasoning)
         {
-            model,
-            messages = messages.ToArray(),
-            temperature = 1.0,
-            max_tokens = 1000,
-            top_p = 0.9,
-            stream = false
-        };
+            // OpenRouter's unified reasoning switch. Reasoning-capable models stop emitting thinking
+            // tokens; models without reasoning ignore it, so this is safe to send unconditionally.
+            body["reasoning"] = new { enabled = false };
+        }
+        return body;
     }
 
     /// <summary>Generates a request body for the Anthropic (Claude) API.</summary>
