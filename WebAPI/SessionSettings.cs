@@ -254,7 +254,7 @@ public class SessionSettings : MagicPromptAPI
             }
             else
             {
-                Logs.Verbose($"Retrieved settings from {SETTINGS_KEY}/{SETTINGS_SUBKEY}: {settingsJson}");
+                Logs.Verbose($"Retrieved settings from {SETTINGS_KEY}/{SETTINGS_SUBKEY} ({settingsJson.Length} chars)");
                 settings = JObject.Parse(settingsJson);
                 // Ensure we have all required backend configurations
                 JObject backendsConfig = settings["backends"] as JObject ?? [];
@@ -459,7 +459,7 @@ public class SessionSettings : MagicPromptAPI
             JObject settings = DefaultSettings;
             // Override the user settings with defaults and save
             Program.Sessions.GenericSharedUser.SaveGenericData(SETTINGS_KEY, SETTINGS_SUBKEY, settings.ToString());
-            Logs.Verbose($"Reset settings to lowercase defaults: {settings}");
+            Logs.Verbose("Reset settings to lowercase defaults");
             return CreateSuccessResponse(null, null, settings);
         }
         catch (Exception ex)

@@ -60,7 +60,7 @@ public static class InstructionResolver
 
                 if (variables.TryGetValue(varName, out string value))
                 {
-                    Logs.Debug($"MagicPromptExtension.InstructionResolver: substituted <var:{varName}> with \"{value}\"");
+                    Logs.Debug($"MagicPromptExtension.InstructionResolver: substituted <var:{varName}> ({value?.Length ?? 0} chars)");
                     return value;
                 }
 
