@@ -428,6 +428,33 @@ async function handleVisionAnalysis() {
 }
 
 /**
+ * Adds a "MagicPrompt Settings" link into the Magic Prompt group in the
+ * Generate tab's left sidebar (alongside the extension's other parameter
+ * fields). Clicking it opens the same settings modal as the gear button in
+ * the MagicPrompt tab.
+ * @returns {void}
+ */
+function addSidebarSettingsLink() {
+    const groupId = 'magicpromptautoenable';
+    const linkId = 'magicprompt_sidebar_settings_link';
+    // The group's content is regenerated whenever the parameter list rebuilds,
+    // so (re)append the link as part of postParamBuildSteps and also run it now
+    // in case the parameters were already built before this ran.
+    const build = () => {
+        const group = document.getElementById(`input_group_content_${groupId}`);
+        if (!group || document.getElementById(linkId)) {
+            return;
+        }
+        group.append(createDiv(linkId, 'keep_group_visible',
+            `<button type="button" class="basic-button" onclick="showSettingsModal()">⚙️ MagicPrompt Settings</button>`));
+    };
+    if (typeof postParamBuildSteps !== 'undefined') {
+        postParamBuildSteps.push(build);
+    }
+    build();
+}
+
+/**
  * Adds the prompt buttons to the Generate tab with a mini-settings panel
  * @returns {void}
  */
@@ -617,8 +644,21 @@ document.addEventListener("DOMContentLoaded", async function () {
         mpRefreshInstructionPrefixes();
         // Add prompt buttons
         addPromptButtons();
+        // Add a Settings link into the Magic Prompt group in the left sidebar
+        addSidebarSettingsLink();
         // Setup auto wildcard seed generation on Generate click (capture phase, before onclick)
         wildcardSeedGenerator();
+        // Relocate the MagicPrompt modals to <body> so they render regardless of
+        // the active tab. They live inside the MagicPrompt tab-pane, which is
+        // display:none when another tab (e.g. Generate) is active, which would
+        // otherwise leave the modal invisible (only its backdrop showing) when
+        // opened from the sidebar Settings link.
+        ['settingsModal', 'customInstructionModal', 'confirmDeleteModal'].forEach(id => {
+            const modal = document.getElementById(id);
+            if (modal && modal.parentElement !== document.body) {
+                document.body.appendChild(modal);
+            }
+        });
         // Initialize modal
         $('#settingsModal').modal({
             backdrop: 'static', keyboard: false, show: false
