@@ -269,6 +269,6 @@ public class PromptHandler
 
     private static void FinalizePrompt(string prompt, string originalMpprompt, T2IParamInput userInput)
     {
-        userInput.Set(T2IParamTypes.Prompt, prompt.Replace("<mporiginal>", originalMpprompt));
+        userInput.Set(T2IParamTypes.Prompt, prompt.Replace("<mporiginal>", originalMpprompt).Trim());
     }
 }
