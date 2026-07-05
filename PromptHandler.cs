@@ -104,7 +104,7 @@ public class PromptHandler
                 return content;
             }
 
-            return EscapeBrackets(ApplyPostFilter(response, userInput));
+            return ApplyPostFilter(response, userInput);
         }
         catch (Exception ex)
         {
@@ -250,21 +250,6 @@ public class PromptHandler
         }
 
         return response.Trim();
-    }
-
-    /// <summary>
-    /// Escapes square brackets in an LLM response so SwarmUI's prompt parser treats them as literal text
-    /// rather than prompt-scheduling syntax (e.g. <c>[from:to:when]</c>). Without this, an LLM response like
-    /// <c>[Camera: handheld shake]</c> makes SwarmTextHandling crash trying to parse the text after the colon as a step number.
-    /// </summary>
-    private static string EscapeBrackets(string response)
-    {
-        if (string.IsNullOrEmpty(response))
-        {
-            return response;
-        }
-
-        return response.Replace("[", "\\[").Replace("]", "\\]");
     }
 
     private static void FinalizePrompt(string prompt, string originalMpprompt, T2IParamInput userInput)
