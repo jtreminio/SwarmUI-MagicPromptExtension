@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Text.RegularExpressions;
 using Hartsy.Extensions.MagicPromptExtension.WebAPI;
 using Newtonsoft.Json.Linq;
@@ -65,25 +66,29 @@ public class PromptHandler
 
         var firstMppromptContent = matches[0].Groups[2].Value;
         var llmResponses = new List<string>();
+        var modelsUsed = new List<string>();
 
         for (int i = 0; i < matches.Count; i++)
         {
             var match = matches[i];
             var fullTag = match.Value;
-            var instructionRaw = match.Groups[1].Success ? match.Groups[1].Value : null;
-            ParseInstructionSpecifier(instructionRaw, out string instructionId, out bool printResponse);
+            var preDataRaw = match.Groups[1].Success ? match.Groups[1].Value : null;
+            ParsePreData(preDataRaw, out string instructionId, out string modelSpec, out bool printResponse);
             var mppromptContent = ResolveMpresponseReferences(match.Groups[2].Value, llmResponses);
+            var tagModelId = ResolveModel(modelSpec, userInput);
+            modelsUsed.Add(string.IsNullOrWhiteSpace(tagModelId) ? modelId : tagModelId);
 
-            var llmResponse = GetLlmResponse(mppromptContent, userInput, instructionId, useCache, i, fullTag);
+            var llmResponse = GetLlmResponse(mppromptContent, userInput, instructionId, tagModelId, useCache, i, fullTag);
             llmResponses.Add(llmResponse);
             prompt = prompt.Replace(fullTag, printResponse ? llmResponse : "");
         }
 
+        RecordModelsUsed(userInput, modelsUsed);
         prompt = ResolveMpresponseReferences(prompt, llmResponses, logStandalone: true);
         FinalizePrompt(prompt, firstMppromptContent, userInput);
     }
 
-    private string GetLlmResponse(string content, T2IParamInput userInput, string instructionId, bool useCache, int tagIndex, string fullTag)
+    private string GetLlmResponse(string content, T2IParamInput userInput, string instructionId, string modelId, bool useCache, int tagIndex, string fullTag)
     {
         try
         {
@@ -91,11 +96,11 @@ public class PromptHandler
             if (useCache)
             {
                 var timeoutMs = LLMAPICalls.GetChatBackendTimeoutMs();
-                response = _cache.GetOrCreate(content, instructionId, () => MakeLlmRequest(content, userInput, instructionId), timeoutMs);
+                response = _cache.GetOrCreate(content, instructionId, modelId, () => MakeLlmRequest(content, userInput, instructionId, modelId), timeoutMs);
             }
             else
             {
-                response = MakeLlmRequest(content, userInput, instructionId);
+                response = MakeLlmRequest(content, userInput, instructionId, modelId);
             }
 
             if (string.IsNullOrEmpty(response))
@@ -113,8 +118,12 @@ public class PromptHandler
         }
     }
 
-    private string MakeLlmRequest(string prompt, T2IParamInput userInput, string instructionId = null)
+    private string MakeLlmRequest(string prompt, T2IParamInput userInput, string instructionId = null, string modelId = null)
     {
+        var effectiveModel = string.IsNullOrWhiteSpace(modelId)
+            ? userInput.Get(_paramModelId, defVal: string.Empty)
+            : modelId;
+
         var request = new JObject
         {
             ["messageContent"] = new JObject
@@ -122,7 +131,7 @@ public class PromptHandler
                 ["text"] = prompt,
                 ["instructions"] = InstructionResolver.Resolve(userInput, instructionId, _paramInstructions)
             },
-            ["modelId"] = userInput.Get(_paramModelId, defVal: string.Empty),
+            ["modelId"] = effectiveModel,
             ["messageType"] = "Text",
             ["action"] = "prompt",
             ["session_id"] = userInput.SourceSession?.ID ?? string.Empty,
@@ -144,16 +153,22 @@ public class PromptHandler
     }
 
     /// <summary>
-    /// Parses the optional mpprompt instruction specifier (the [...] section).
-    /// Supports a trailing ", false" flag to suppress printing the LLM response while still recording it for &lt;mpresponse:N&gt;.
+    /// Parses the optional mpprompt pre-data (the [...] section).
+    /// Grammar: [instruction][|model][,false]
+    /// - The optional "|model" part selects the LLM for this tag. A model of "random" picks a random non-blocked model.
+    /// - A trailing ", false" flag (or a bare "false" in the instruction slot) suppresses printing the LLM response
+    ///   while still recording it for &lt;mpresponse:N&gt;.
     /// Examples:
-    /// - [false] => default instruction, don't print
-    /// - [Action,false] => instruction "Action", don't print
-    /// - [Action] => instruction "Action", print
+    /// - [Action]              => instruction "Action", default model, print
+    /// - [Action|gpt-4o]       => instruction "Action", model "gpt-4o", print
+    /// - [|random]             => default instruction, random model, print
+    /// - [Action|gpt-4o,false] => instruction "Action", model "gpt-4o", don't print
+    /// - [false]               => default instruction, default model, don't print
     /// </summary>
-    private static void ParseInstructionSpecifier(string raw, out string instructionId, out bool printResponse)
+    private static void ParsePreData(string raw, out string instructionId, out string modelSpec, out bool printResponse)
     {
         instructionId = null;
+        modelSpec = null;
         printResponse = true;
 
         if (string.IsNullOrWhiteSpace(raw))
@@ -162,26 +177,111 @@ public class PromptHandler
         }
 
         var trimmed = raw.Trim();
-        if (trimmed.Equals("false", StringComparison.OrdinalIgnoreCase))
+
+        // Strip an optional trailing ", false" print-suppression flag.
+        int commaIndex = trimmed.LastIndexOf(',');
+        if (commaIndex >= 0 && trimmed[(commaIndex + 1)..].Trim().Equals("false", StringComparison.OrdinalIgnoreCase))
         {
             printResponse = false;
+            trimmed = trimmed[..commaIndex].Trim();
+        }
+
+        // Split instruction from model on the first '|'.
+        int pipeIndex = trimmed.IndexOf('|');
+        string instructionPart;
+        if (pipeIndex >= 0)
+        {
+            instructionPart = trimmed[..pipeIndex].Trim();
+            var modelPart = trimmed[(pipeIndex + 1)..].Trim();
+            modelSpec = string.IsNullOrWhiteSpace(modelPart) ? null : modelPart;
+        }
+        else
+        {
+            instructionPart = trimmed;
+        }
+
+        // A bare "false" in the instruction slot is shorthand for print-suppression with the default instruction.
+        if (instructionPart.Equals("false", StringComparison.OrdinalIgnoreCase))
+        {
+            printResponse = false;
+            instructionPart = "";
+        }
+
+        instructionId = string.IsNullOrWhiteSpace(instructionPart) ? null : instructionPart;
+    }
+
+    /// <summary>
+    /// Resolves the per-tag model specifier to a concrete model id.
+    /// Returns null to fall back to the globally selected "MP Model ID".
+    /// A specifier of "random" selects a random model from the current non-blocked list.
+    /// </summary>
+    private static string ResolveModel(string modelSpec, T2IParamInput userInput)
+    {
+        if (string.IsNullOrWhiteSpace(modelSpec))
+        {
+            return null;
+        }
+
+        if (modelSpec.Equals("random", StringComparison.OrdinalIgnoreCase))
+        {
+            return PickRandomModel(userInput);
+        }
+
+        return modelSpec.Trim();
+    }
+
+    /// <summary>
+    /// Picks a random model id from the non-blocked list. Uses the wildcard-seeded RNG so the selection is
+    /// reproducible within a batch (and cache-friendly) unless a new wildcard seed is generated per image.
+    /// Returns null (falling back to the global model) when no models are available.
+    /// </summary>
+    private static string PickRandomModel(T2IParamInput userInput)
+    {
+        var session = userInput.SourceSession;
+        if (session == null)
+        {
+            Logs.Warning("MagicPromptExtension.PromptHandler: cannot resolve 'random' model without a session; using default model.");
+            return null;
+        }
+
+        var ids = ModelListProvider.GetModelList(session)
+            .Select(entry =>
+            {
+                int sep = entry.IndexOf("///", StringComparison.Ordinal);
+                return sep >= 0 ? entry[..sep] : entry;
+            })
+            .Where(id => !string.IsNullOrWhiteSpace(id) && !id.Equals("loading", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (ids.Count == 0)
+        {
+            Logs.Warning("MagicPromptExtension.PromptHandler: 'random' model requested but no non-blocked models are available; using default model.");
+            return null;
+        }
+
+        var chosen = ids[userInput.GetWildcardRandom().Next(ids.Count)];
+        Logs.Debug($"MagicPromptExtension.PromptHandler: 'random' selected model '{chosen}'.");
+        return chosen;
+    }
+
+    /// <summary>
+    /// Updates the "MP Model ID" parameter to reflect the model(s) actually used, so image metadata matches what
+    /// ran rather than the globally selected dropdown value. When multiple distinct models were used (e.g. per-tag
+    /// overrides or "random"), they are joined with ", ".
+    /// </summary>
+    private void RecordModelsUsed(T2IParamInput userInput, List<string> modelsUsed)
+    {
+        var distinct = modelsUsed
+            .Where(m => !string.IsNullOrWhiteSpace(m))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        if (distinct.Count == 0)
+        {
             return;
         }
 
-        int commaIndex = trimmed.LastIndexOf(',');
-        if (commaIndex >= 0)
-        {
-            var tail = trimmed[(commaIndex + 1)..].Trim();
-            if (tail.Equals("false", StringComparison.OrdinalIgnoreCase))
-            {
-                printResponse = false;
-                var idPart = trimmed[..commaIndex].Trim();
-                instructionId = string.IsNullOrWhiteSpace(idPart) ? null : idPart;
-                return;
-            }
-        }
-
-        instructionId = trimmed;
+        userInput.Set(_paramModelId, string.Join(", ", distinct));
     }
 
     /// <summary>
