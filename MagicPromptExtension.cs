@@ -93,7 +93,7 @@ public class MagicPromptExtension : Extension
 
         _paramPostFilter = T2IParamTypes.Register<string>(new T2IParamType(
             Name: "MP Post-Filter",
-            Description: "Strings to strip from LLM responses, one per line. Each line is removed as a literal match from every response.",
+            Description: "Strings to strip from LLM responses, one per line. Each line is removed as a literal match from every response. A line in the form \"FOO=BAR\" (double quotes required) instead replaces FOO with BAR.",
             Default: "",
             IgnoreIf: "",
             Group: paramGroup,

@@ -343,10 +343,24 @@ public class PromptHandler
         string[] filters = postFilter.Split('\n', StringSplitOptions.RemoveEmptyEntries);
         foreach (string filter in filters)
         {
-            if (!string.IsNullOrEmpty(filter))
+            if (string.IsNullOrEmpty(filter))
             {
-                response = response.Replace(filter, "", StringComparison.Ordinal);
+                continue;
             }
+
+            string trimmed = filter.Trim();
+            if (trimmed.Length > 2 && trimmed[0] == '"' && trimmed[^1] == '"')
+            {
+                string inner = trimmed[1..^1];
+                int eq = inner.IndexOf('=');
+                if (eq > 0)
+                {
+                    response = response.Replace(inner[..eq], inner[(eq + 1)..], StringComparison.Ordinal);
+                    continue;
+                }
+            }
+
+            response = response.Replace(filter, "", StringComparison.Ordinal);
         }
 
         return response.Trim();
