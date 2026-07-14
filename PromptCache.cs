@@ -23,9 +23,9 @@ public class PromptCache
     /// Handles request deduplication - if another thread is already fetching the same key,
     /// this thread will wait for that result instead of making a duplicate request.
     /// </summary>
-    public string GetOrCreate(string prompt, string instructionId, string modelId, Func<string> createValue, int timeoutMs = 0)
+    public string GetOrCreate(string prompt, string instructionId, string modelId, string thinking, Func<string> createValue, int timeoutMs = 0)
     {
-        var cacheKey = BuildCacheKey(prompt, instructionId, modelId);
+        var cacheKey = BuildCacheKey(prompt, instructionId, modelId, thinking);
         var effectiveTimeout = timeoutMs > 0 ? timeoutMs : DefaultTimeoutMs;
         TaskCompletionSource<string> pendingTcs = null;
 
@@ -103,7 +103,7 @@ public class PromptCache
         }
     }
 
-    private static string BuildCacheKey(string prompt, string instructionId, string modelId)
+    private static string BuildCacheKey(string prompt, string instructionId, string modelId, string thinking)
     {
         var key = NormalizePrompt(prompt);
         if (!string.IsNullOrEmpty(instructionId))
@@ -113,6 +113,10 @@ public class PromptCache
         if (!string.IsNullOrEmpty(modelId))
         {
             key += $"##{modelId.ToLowerInvariant()}";
+        }
+        if (!string.IsNullOrEmpty(thinking) && !thinking.Equals("none", StringComparison.OrdinalIgnoreCase))
+        {
+            key += $"@@{thinking.ToLowerInvariant()}";
         }
         return key;
     }

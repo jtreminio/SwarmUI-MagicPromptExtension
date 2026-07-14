@@ -36,24 +36,49 @@ public static class BackendSchema
     /// <param name="content">Message content including text and media</param>
     /// <param name="model">Model name to use</param>
     /// <param name="messageType">Type of message (Text or Vision)</param>
+    /// <param name="thinking">Thinking/reasoning effort: "none", "low", "medium", or "high"</param>
     /// <returns>Returns an object with the schema type for the backend.</returns>
-    public static object GetSchemaType(string type, MessageContent content, string model, MessageType messageType = MessageType.Text, long seed = -1)
+    public static object GetSchemaType(string type, MessageContent content, string model, MessageType messageType = MessageType.Text, long seed = -1, string thinking = "none")
     {
         if (content == null || string.IsNullOrEmpty(model))
         {
             throw new ArgumentException("Content or model cannot be null or empty.");
         }
         type = type.ToLower();
+        thinking = NormalizeThinking(thinking);
         _ = content.KeepAlive;
         return type switch
         {
-            "ollama" => OllamaRequestBody(content, model, messageType, seed),
-            "grok" => OpenAICompatibleRequestBody(content, model, messageType, preferPngForBase64: true, disableReasoning: false, seed),
-            "openai" or "openaiapi" => OpenAICompatibleRequestBody(content, model, messageType, preferPngForBase64: false, disableReasoning: false, seed),
-            // OpenRouter silently routes many reasoning-capable models; disable reasoning explicitly so we don't waste tokens on it.
-            "openrouter" => OpenAICompatibleRequestBody(content, model, messageType, preferPngForBase64: false, disableReasoning: true, seed),
-            "anthropic" => AnthropicRequestBody(content, model, messageType),
+            "ollama" => OllamaRequestBody(content, model, messageType, seed, thinking),
+            "grok" => OpenAICompatibleRequestBody(content, model, messageType, preferPngForBase64: true, isOpenRouter: false, seed, thinking),
+            "openai" or "openaiapi" => OpenAICompatibleRequestBody(content, model, messageType, preferPngForBase64: false, isOpenRouter: false, seed, thinking),
+            "openrouter" => OpenAICompatibleRequestBody(content, model, messageType, preferPngForBase64: false, isOpenRouter: true, seed, thinking),
+            "anthropic" => AnthropicRequestBody(content, model, messageType, thinking),
             _ => throw new ArgumentException($"Unsupported backend type: {type}")
+        };
+    }
+
+    /// <summary>Clamps a thinking value to one of "none", "low", "medium", "high" (unknown values become "none").</summary>
+    public static string NormalizeThinking(string thinking)
+    {
+        return thinking?.Trim().ToLowerInvariant() switch
+        {
+            "low" => "low",
+            "medium" => "medium",
+            "high" => "high",
+            _ => "none"
+        };
+    }
+
+    /// <summary>Response token limit, scaled up when thinking is enabled since reasoning tokens count against it on most backends.</summary>
+    private static int MaxTokensForThinking(string thinking, int baseTokens)
+    {
+        return thinking switch
+        {
+            "low" => baseTokens + 1024,
+            "medium" => baseTokens + 3072,
+            "high" => baseTokens + 7168,
+            _ => baseTokens
         };
     }
 
@@ -99,7 +124,7 @@ public static class BackendSchema
     }
 
     /// <summary>Generates a request body for Ollama backend.</summary>
-    private static object OllamaRequestBody(MessageContent content, string model, MessageType messageType, long seed = -1)
+    private static object OllamaRequestBody(MessageContent content, string model, MessageType messageType, long seed = -1, string thinking = "none")
     {
         List<object> messages = [];
         if (!string.IsNullOrEmpty(content.Instructions))
@@ -119,29 +144,31 @@ public static class BackendSchema
                 content = content.Text,
                 images = content.Media.Select(m => CompressImageForVision(m, "JPG")).ToArray()
             });
-
-            return new
-            {
-                model,
-                messages = messages.ToArray(),
-                stream = false,
-                keep_alive = content.KeepAlive,
-                options
-            };
         }
-        messages.Add(new { role = "user", content = content.Text });
-        return new
+        else
         {
-            model,
-            messages = messages.ToArray(),
-            stream = false,
-            keep_alive = content.KeepAlive,
-            options
+            messages.Add(new { role = "user", content = content.Text });
+        }
+
+        Dictionary<string, object> body = new()
+        {
+            ["model"] = model,
+            ["messages"] = messages.ToArray(),
+            ["stream"] = false,
+            ["keep_alive"] = content.KeepAlive,
+            ["options"] = options
         };
+        if (thinking != "none")
+        {
+            // Ollama's "think" accepts effort levels for models that support them (e.g. gpt-oss);
+            // models that only support boolean thinking reject level strings with a clear error.
+            body["think"] = thinking;
+        }
+        return body;
     }
 
     /// <summary>Generates a request body for OpenAI and compatible backends.</summary>
-    private static object OpenAICompatibleRequestBody(MessageContent content, string model, MessageType messageType, bool preferPngForBase64, bool disableReasoning, long seed = -1)
+    private static object OpenAICompatibleRequestBody(MessageContent content, string model, MessageType messageType, bool preferPngForBase64, bool isOpenRouter, long seed = -1, string thinking = "none")
     {
         List<object> messages = [];
         // Add system message if instructions exist
@@ -155,7 +182,8 @@ public static class BackendSchema
         {
             ["model"] = model,
             ["temperature"] = 1.0,
-            ["max_tokens"] = 1000,
+            // Reasoning tokens count against max_tokens, so grow the limit with the thinking level.
+            ["max_tokens"] = MaxTokensForThinking(thinking, 1000),
             ["stream"] = false
         };
         if (messageType == MessageType.Vision && content.Media?.Any() == true)
@@ -193,17 +221,26 @@ public static class BackendSchema
         {
             body["seed"] = seed;
         }
-        if (disableReasoning)
+        if (isOpenRouter)
         {
-            // OpenRouter's unified reasoning switch. Reasoning-capable models stop emitting thinking
-            // tokens; models without reasoning ignore it, so this is safe to send unconditionally.
-            body["reasoning"] = new { enabled = false };
+            // OpenRouter's unified reasoning switch. Reasoning-capable models honor it; models
+            // without reasoning ignore it, so this is safe to send unconditionally. OpenRouter
+            // silently routes many reasoning-capable models, so "none" disables reasoning
+            // explicitly rather than omitting the field.
+            body["reasoning"] = thinking == "none"
+                ? new { enabled = false }
+                : new { effort = thinking };
+        }
+        else if (thinking != "none")
+        {
+            // OpenAI/Grok effort switch; non-reasoning models reject it with a clear error.
+            body["reasoning_effort"] = thinking;
         }
         return body;
     }
 
     /// <summary>Generates a request body for the Anthropic (Claude) API.</summary>
-    private static object AnthropicRequestBody(MessageContent content, string model, MessageType messageType)
+    private static object AnthropicRequestBody(MessageContent content, string model, MessageType messageType, string thinking = "none")
     {
         List<object> messages = [];
         if (messageType == MessageType.Vision && content.Media?.Any() == true)
@@ -235,21 +272,31 @@ public static class BackendSchema
                 role = "user",
                 content = messageContent.ToArray()
             });
-            return new
-            {
-                model,
-                messages = messages.ToArray(),
-                system = content.Instructions,
-                max_tokens = 1024
-            };
         }
-        messages.Add(new { role = "user", content = content.Text });
-        return new
+        else
         {
-            model,
-            messages = messages.ToArray(),
-            system = content.Instructions,
-            max_tokens = 1024
+            messages.Add(new { role = "user", content = content.Text });
+        }
+
+        Dictionary<string, object> body = new()
+        {
+            ["model"] = model,
+            ["messages"] = messages.ToArray(),
+            ["system"] = content.Instructions,
+            ["max_tokens"] = 1024
         };
+        if (thinking != "none")
+        {
+            // Anthropic requires budget_tokens >= 1024 and max_tokens > budget_tokens.
+            int budget = thinking switch
+            {
+                "low" => 1024,
+                "medium" => 2048,
+                _ => 4096
+            };
+            body["max_tokens"] = budget + 1024;
+            body["thinking"] = new { type = "enabled", budget_tokens = budget };
+        }
+        return body;
     }
 }

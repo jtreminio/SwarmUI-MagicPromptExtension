@@ -65,6 +65,7 @@ The MagicPrompt Extension now integrates directly with SwarmUI's prompt parsing 
 * **Wildcard Seed Generation**: The "MP Generate Wildcard Seed" parameter generates new wildcard seeds for each batch, perfect for creating varied results while reusing cached LLM responses. If your prompts contain `<wildcard>` or `<wc>` tags, and you run a batch of multiple images, the same wildcard selections will be chosen, ensuring your prompts are the same and the LLM is called only once per batch.
 * **Model Selection**: Choose different LLM models for each batch using the "MP Model ID" parameter.
 * **Instruction Selection**: Select custom instructions for each batch using the "MP Instructions" parameter.
+* **Thinking Level**: Control how much thinking/reasoning effort the LLM uses with the "MP Thinking" parameter (None/Low/Medium/High, default None). None disables thinking where the backend supports an off switch. Levels map per backend: OpenRouter reasoning effort, OpenAI/Grok `reasoning_effort`, Ollama `think` level, Anthropic thinking token budget. Levels only apply to reasoning-capable models; some backends reject unsupported levels with an error.
 
 ## Prerequisites
 ----------------

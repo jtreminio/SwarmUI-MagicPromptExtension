@@ -18,19 +18,22 @@ public class PromptHandler
     private readonly T2IRegisteredParam<string> _paramModelId;
     private readonly T2IRegisteredParam<string> _paramInstructions;
     private readonly T2IRegisteredParam<string> _paramPostFilter;
+    private readonly T2IRegisteredParam<string> _paramThinking;
 
     public PromptHandler(
         PromptCache cache,
         T2IRegisteredParam<bool> paramUseCache,
         T2IRegisteredParam<string> paramModelId,
         T2IRegisteredParam<string> paramInstructions,
-        T2IRegisteredParam<string> paramPostFilter)
+        T2IRegisteredParam<string> paramPostFilter,
+        T2IRegisteredParam<string> paramThinking)
     {
         _cache = cache;
         _paramUseCache = paramUseCache;
         _paramModelId = paramModelId;
         _paramInstructions = paramInstructions;
         _paramPostFilter = paramPostFilter;
+        _paramThinking = paramThinking;
     }
 
     /// <summary>
@@ -96,7 +99,8 @@ public class PromptHandler
             if (useCache)
             {
                 var timeoutMs = LLMAPICalls.GetChatBackendTimeoutMs();
-                response = _cache.GetOrCreate(content, instructionId, modelId, () => MakeLlmRequest(content, userInput, instructionId, modelId), timeoutMs);
+                var thinking = userInput.Get(_paramThinking, defVal: "none");
+                response = _cache.GetOrCreate(content, instructionId, modelId, thinking, () => MakeLlmRequest(content, userInput, instructionId, modelId), timeoutMs);
             }
             else
             {
@@ -135,7 +139,8 @@ public class PromptHandler
             ["messageType"] = "Text",
             ["action"] = "prompt",
             ["session_id"] = userInput.SourceSession?.ID ?? string.Empty,
-            ["seed"] = userInput.Get(T2IParamTypes.Seed, -1).ToString()
+            ["seed"] = userInput.Get(T2IParamTypes.Seed, -1).ToString(),
+            ["thinking"] = userInput.Get(_paramThinking, defVal: "none")
         };
 
         var resp = LLMAPICalls.MagicPromptPhoneHome(request, userInput.SourceSession)

@@ -409,6 +409,7 @@ public class LLMAPICalls : MagicPromptAPI
                 }
             }
             string action = requestData["action"]?.ToString()?.ToLower() ?? "chat";
+            string thinking = NormalizeThinking(requestData["thinking"]?.ToString());
             if (string.IsNullOrEmpty(modelId))
             {
                 return CreateErrorResponse("Model ID is missing");
@@ -469,7 +470,7 @@ public class LLMAPICalls : MagicPromptAPI
             object requestBody;
             try
             {
-                requestBody = GetSchemaType(backend, messageContent, modelId, messageType, seed);
+                requestBody = GetSchemaType(backend, messageContent, modelId, messageType, seed, thinking);
             }
             catch (ArgumentException ex)
             {

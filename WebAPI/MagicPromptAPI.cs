@@ -115,7 +115,10 @@ public class MagicPromptAPI
                     AnthropicResponse anthropicResponse = System.Text.Json.JsonSerializer.Deserialize<AnthropicResponse>(responseContent, jsonSerializerOptions);
                     if (anthropicResponse?.Content != null && anthropicResponse.Content.Length > 0)
                     {
-                        messageContent = anthropicResponse.Content[0].Text;
+                        // With extended thinking enabled, the first content block is a "thinking" block;
+                        // take the first "text" block instead of blindly using index 0.
+                        messageContent = anthropicResponse.Content.FirstOrDefault(c => c.Type == "text")?.Text
+                            ?? anthropicResponse.Content[0].Text;
                     }
                     else
                     {

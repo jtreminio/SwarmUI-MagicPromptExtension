@@ -15,6 +15,7 @@ public class MagicPromptExtension : Extension
     private static T2IRegisteredParam<string> _paramModelId;
     private static T2IRegisteredParam<string> _paramInstructions;
     private static T2IRegisteredParam<string> _paramPostFilter;
+    private static T2IRegisteredParam<string> _paramThinking;
 
     public override void OnPreInit()
     {
@@ -102,6 +103,16 @@ public class MagicPromptExtension : Extension
             Toggleable: true
         ));
 
+        _paramThinking = T2IParamTypes.Register<string>(new T2IParamType(
+            Name: "MP Thinking",
+            Description: "How much thinking/reasoning effort the LLM uses before responding. 'None' disables thinking where the backend supports an off switch. Mapping per backend: OpenRouter reasoning effort, OpenAI/Grok reasoning_effort, Ollama think level, Anthropic thinking budget. Levels only work on reasoning-capable models; some backends reject unsupported levels.",
+            Default: "none",
+            IgnoreIf: "none",
+            GetValues: _ => ["none///None", "low///Low", "medium///Medium", "high///High"],
+            Group: paramGroup,
+            OrderPriority: 6
+        ));
+
         PromptRegion.RegisterCustomPrefix("mpprompt");
         PromptRegion.RegisterCustomPrefix("mpresponse");
         T2IPromptHandling.PromptTagPostProcessors["mpprompt"] = ProcessMppromptTag;
@@ -130,7 +141,7 @@ public class MagicPromptExtension : Extension
     {
         T2IParamInput.LateSpecialParameterHandlers.Add(userInput =>
         {
-            var handler = new PromptHandler(_promptCache, _paramUseCache, _paramModelId, _paramInstructions, _paramPostFilter);
+            var handler = new PromptHandler(_promptCache, _paramUseCache, _paramModelId, _paramInstructions, _paramPostFilter, _paramThinking);
             handler.ProcessPrompt(userInput);
         });
     }
