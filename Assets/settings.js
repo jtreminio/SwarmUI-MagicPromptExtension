@@ -1355,7 +1355,7 @@ async function fetchModels() {
   }
 }
 
-function updateModelListOnLeft() {
+function updateModelListOnLeft(preserveSelection = false) {
   try {
     const modelSelect = document.getElementById('modelSelect');
     const enhanceInstructions = getInstructionsForCategory('prompt');
@@ -1374,6 +1374,7 @@ function updateModelListOnLeft() {
       listOfModels.classList.add('mp-model-select-with-cost');
     }
 
+    const previousModelValue = listOfModels.value;
     listOfModels.innerHTML = '';
     Array.from(modelSelect.options).forEach(opt => {
       const option = new Option(opt.text, opt.value);
@@ -1402,7 +1403,15 @@ function updateModelListOnLeft() {
     }
 
     // Mirror current selection
-    listOfModels.value = modelSelect.value || '';
+    let targetModelValue = modelSelect.value || '';
+    if (preserveSelection && previousModelValue) {
+      const stillAvailable = Array.from(listOfModels.options)
+        .some((o) => o.value === previousModelValue);
+      if (stillAvailable) {
+        targetModelValue = previousModelValue;
+      }
+    }
+    listOfModels.value = targetModelValue;
     triggerChangeFor(listOfModels);
     triggerChangeFor(listOfInstructions);
   } catch (error) {
@@ -2817,6 +2826,7 @@ function initSettingsModal() {
     fetchModels()
       .then((result) => {
         console.log('Initial models loaded:', result);
+        updateModelListOnLeft(true);
       })
       .catch((error) => {
         console.error('Error loading initial models:', error);
