@@ -7,11 +7,21 @@ public class PromptCache
     private readonly Dictionary<string, string> _cache = new();
     private readonly LinkedList<string> _accessOrder = new();
     private readonly Dictionary<string, LinkedListNode<string>> _cacheNodes = new();
-    private readonly Dictionary<string, TaskCompletionSource<string>> _pendingRequests = new();
+    private readonly Dictionary<string, TaskCompletionSource<PendingResult>> _pendingRequests = new();
+    private readonly Dictionary<string, int> _attemptCounts = new();
+    private readonly Dictionary<string, int> _activeCallers = new();
     private readonly object _lock = new();
 
     private readonly int _maxSize;
     private const int DefaultTimeoutMs = 90_000;
+
+    /// <summary>Maximum number of LLM calls made for one cache key while callers are actively contending for it.
+    /// The count resets once every caller for that key has finished, so a later batch starts fresh.</summary>
+    private const int MaxAttempts = 2;
+
+    /// <summary>Outcome handed from the thread that owned an attempt to the threads waiting on it.
+    /// A null <see cref="Value"/> means the attempt failed and <see cref="Error"/> explains why.</summary>
+    private sealed record PendingResult(string Value, string Error);
 
     public PromptCache(int maxSize = 1000)
     {
@@ -22,12 +32,16 @@ public class PromptCache
     /// Gets a cached result or creates a new one using the provided function.
     /// Handles request deduplication - if another thread is already fetching the same key,
     /// this thread will wait for that result instead of making a duplicate request.
+    /// If the in-flight request fails, the waiting threads do not all fail with it: one of them
+    /// takes over and retries (still only one request in flight at a time), up to <see cref="MaxAttempts"/>
+    /// calls total for the key. Returns null once the attempts are exhausted, with <paramref name="error"/>
+    /// describing the last failure.
     /// </summary>
-    public string GetOrCreate(string prompt, string instructionId, string modelId, string thinking, Func<string> createValue, int timeoutMs = 0)
+    public string GetOrCreate(string prompt, string instructionId, string modelId, string thinking, Func<string> createValue, int timeoutMs, out string error)
     {
         var cacheKey = BuildCacheKey(prompt, instructionId, modelId, thinking);
         var effectiveTimeout = timeoutMs > 0 ? timeoutMs : DefaultTimeoutMs;
-        TaskCompletionSource<string> pendingTcs = null;
+        error = null;
 
         lock (_lock)
         {
@@ -36,55 +50,116 @@ public class PromptCache
                 return cachedResult;
             }
 
-            if (_pendingRequests.TryGetValue(cacheKey, out var existingTcs))
-            {
-                Logs.Debug("MagicPromptExtension.PromptCache: another thread is already fetching this prompt, waiting...");
-                pendingTcs = existingTcs;
-            }
-            else
-            {
-                // We are the owner - create a TaskCompletionSource for other threads to wait on
-                var tcs = new TaskCompletionSource<string>();
-                _pendingRequests[cacheKey] = tcs;
-            }
+            _activeCallers[cacheKey] = _activeCallers.GetValueOrDefault(cacheKey) + 1;
         }
 
-        // If another thread was already fetching, wait for it OUTSIDE the lock
-        if (pendingTcs != null)
-        {
-            return WaitForPendingRequest(pendingTcs, effectiveTimeout);
-        }
-
-        // Make the request OUTSIDE the lock to avoid blocking other threads
-        string result;
         try
         {
-            result = createValue();
-        }
-        catch (Exception ex)
-        {
-            Logs.Error($"MagicPromptExtension.PromptCache: factory failed: {ex.Message}");
+            while (true)
+            {
+                TaskCompletionSource<PendingResult> pendingTcs = null;
 
+                lock (_lock)
+                {
+                    if (TryGetFromCacheLocked(cacheKey, out var cachedResult))
+                    {
+                        return cachedResult;
+                    }
+
+                    if (_pendingRequests.TryGetValue(cacheKey, out var existingTcs))
+                    {
+                        Logs.Debug("MagicPromptExtension.PromptCache: another thread is already fetching this prompt, waiting...");
+                        pendingTcs = existingTcs;
+                    }
+                    else if (_attemptCounts.GetValueOrDefault(cacheKey) >= MaxAttempts)
+                    {
+                        Logs.Debug($"MagicPromptExtension.PromptCache: giving up, {MaxAttempts} attempts already failed for this prompt");
+                        error ??= $"LLM request failed {MaxAttempts} times";
+                        return null;
+                    }
+                    else
+                    {
+                        // We are the owner of this attempt - create a TaskCompletionSource for other threads to wait on
+                        _attemptCounts[cacheKey] = _attemptCounts.GetValueOrDefault(cacheKey) + 1;
+                        _pendingRequests[cacheKey] = new TaskCompletionSource<PendingResult>();
+                    }
+                }
+
+                // If another thread was already fetching, wait for it OUTSIDE the lock
+                if (pendingTcs != null)
+                {
+                    var waited = WaitForPendingRequest(pendingTcs, effectiveTimeout, out bool retryable, out string waitError);
+                    if (waited != null)
+                    {
+                        return waited;
+                    }
+
+                    error = waitError ?? error;
+                    if (!retryable)
+                    {
+                        return null;
+                    }
+
+                    // The owner failed - loop back to either retry ourselves or wait on whoever got there first
+                    continue;
+                }
+
+                // Make the request OUTSIDE the lock to avoid blocking other threads
+                string result = null;
+                string attemptError = null;
+                try
+                {
+                    result = createValue();
+                    if (string.IsNullOrEmpty(result))
+                    {
+                        result = null;
+                        attemptError = "LLM returned an empty response";
+                    }
+                }
+                catch (Exception ex)
+                {
+                    attemptError = ex.Message;
+                    Logs.Error($"MagicPromptExtension.PromptCache: factory failed: {ex.Message}");
+                }
+
+                lock (_lock)
+                {
+                    if (result != null)
+                    {
+                        AddToCacheLocked(cacheKey, result);
+                        _attemptCounts.Remove(cacheKey);
+                    }
+
+                    SignalPendingRequestLocked(cacheKey, result, attemptError);
+                    CleanupPendingRequestLocked(cacheKey);
+                }
+
+                if (result != null)
+                {
+                    return result;
+                }
+
+                // Our attempt failed - loop back, another attempt may still be available
+                error = attemptError;
+            }
+        }
+        finally
+        {
             lock (_lock)
             {
-                CleanupPendingRequestLocked(cacheKey);
+                int remaining = _activeCallers.GetValueOrDefault(cacheKey) - 1;
+                if (remaining > 0)
+                {
+                    _activeCallers[cacheKey] = remaining;
+                }
+                else
+                {
+                    // Last caller for this key is done - forget the failed attempts so a later batch starts fresh
+                    _activeCallers.Remove(cacheKey);
+                    _attemptCounts.Remove(cacheKey);
+                }
             }
-
-            return null;
         }
-
-        lock (_lock)
-        {
-            if (result != null)
-            {
-                AddToCacheLocked(cacheKey, result);
-            }
-
-            SignalPendingRequestLocked(cacheKey, result);
-            CleanupPendingRequestLocked(cacheKey);
-        }
-
-        return result;
     }
 
     public void Clear()
@@ -94,6 +169,8 @@ public class PromptCache
             _cache.Clear();
             _accessOrder.Clear();
             _cacheNodes.Clear();
+            _attemptCounts.Clear();
+            _activeCallers.Clear();
 
             foreach (var tcs in _pendingRequests.Values)
             {
@@ -173,11 +250,11 @@ public class PromptCache
         _cacheNodes[key] = newNode;
     }
 
-    private void SignalPendingRequestLocked(string key, string result)
+    private void SignalPendingRequestLocked(string key, string result, string error)
     {
         if (_pendingRequests.TryGetValue(key, out var tcs))
         {
-            tcs.TrySetResult(result ?? string.Empty);
+            tcs.TrySetResult(new PendingResult(result, error));
         }
     }
 
@@ -186,8 +263,12 @@ public class PromptCache
         _pendingRequests.Remove(key);
     }
 
-    private static string WaitForPendingRequest(TaskCompletionSource<string> tcs, int timeoutMs)
+    /// <summary>Waits on an in-flight attempt owned by another thread. Returns the value on success, or null on
+    /// failure with <paramref name="retryable"/> set when it is worth looping back for another attempt.</summary>
+    private static string WaitForPendingRequest(TaskCompletionSource<PendingResult> tcs, int timeoutMs, out bool retryable, out string error)
     {
+        retryable = false;
+        error = null;
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
         try
@@ -195,34 +276,40 @@ public class PromptCache
             if (!tcs.Task.Wait(timeoutMs))
             {
                 Logs.Warning($"MagicPromptExtension.PromptCache: timeout after {timeoutMs}ms waiting for pending request");
+                error = $"Timed out after {timeoutMs}ms waiting on an in-flight LLM request";
                 return null;
             }
 
             stopwatch.Stop();
             var result = tcs.Task.Result;
 
-            if (string.IsNullOrEmpty(result))
+            if (result?.Value == null)
             {
-                Logs.Debug("MagicPromptExtension.PromptCache: waited for owner request, but got empty result");
+                Logs.Debug("MagicPromptExtension.PromptCache: waited for owner request, but it failed - retrying if attempts remain");
+                error = result?.Error;
+                retryable = true;
                 return null;
             }
 
             Logs.Debug($"MagicPromptExtension.PromptCache: waited {stopwatch.ElapsedMilliseconds}ms for owner request");
-            return result;
+            return result.Value;
         }
         catch (OperationCanceledException)
         {
             Logs.Debug("MagicPromptExtension.PromptCache: pending request was cancelled");
+            error = "The in-flight LLM request was cancelled";
             return null;
         }
         catch (AggregateException ex) when (ex.InnerException is OperationCanceledException)
         {
             Logs.Debug("MagicPromptExtension.PromptCache: pending request was cancelled");
+            error = "The in-flight LLM request was cancelled";
             return null;
         }
         catch (Exception ex)
         {
             Logs.Error($"MagicPromptExtension.PromptCache: error waiting for pending request: {ex.Message}");
+            error = ex.Message;
             return null;
         }
     }

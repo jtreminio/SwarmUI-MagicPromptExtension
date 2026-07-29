@@ -19,6 +19,10 @@ public class PromptHandler
     private readonly T2IRegisteredParam<string> _paramInstructions;
     private readonly T2IRegisteredParam<string> _paramPostFilter;
     private readonly T2IRegisteredParam<string> _paramThinking;
+    private readonly T2IRegisteredParam<string> _paramOnError;
+
+    public const string OnErrorSkip = "skip";
+    public const string OnErrorFallback = "fallback";
 
     public PromptHandler(
         PromptCache cache,
@@ -26,7 +30,8 @@ public class PromptHandler
         T2IRegisteredParam<string> paramModelId,
         T2IRegisteredParam<string> paramInstructions,
         T2IRegisteredParam<string> paramPostFilter,
-        T2IRegisteredParam<string> paramThinking)
+        T2IRegisteredParam<string> paramThinking,
+        T2IRegisteredParam<string> paramOnError)
     {
         _cache = cache;
         _paramUseCache = paramUseCache;
@@ -34,6 +39,7 @@ public class PromptHandler
         _paramInstructions = paramInstructions;
         _paramPostFilter = paramPostFilter;
         _paramThinking = paramThinking;
+        _paramOnError = paramOnError;
     }
 
     /// <summary>
@@ -93,33 +99,50 @@ public class PromptHandler
 
     private string GetLlmResponse(string content, T2IParamInput userInput, string instructionId, string modelId, bool useCache, int tagIndex, string fullTag)
     {
+        string response = null;
+        string error = null;
         try
         {
-            string response;
             if (useCache)
             {
                 var timeoutMs = LLMAPICalls.GetChatBackendTimeoutMs();
                 var thinking = userInput.Get(_paramThinking, defVal: "none");
-                response = _cache.GetOrCreate(content, instructionId, modelId, thinking, () => MakeLlmRequest(content, userInput, instructionId, modelId), timeoutMs);
+                response = _cache.GetOrCreate(content, instructionId, modelId, thinking, () => MakeLlmRequest(content, userInput, instructionId, modelId), timeoutMs, out error);
             }
             else
             {
                 response = MakeLlmRequest(content, userInput, instructionId, modelId);
             }
-
-            if (string.IsNullOrEmpty(response))
-            {
-                Logs.Error($"MagicPromptExtension.PromptHandler: empty response from LLM for tag #{tagIndex}: {fullTag}");
-                return content;
-            }
-
-            return ApplyPostFilter(response, userInput);
         }
         catch (Exception ex)
         {
-            Logs.Error($"MagicPromptExtension.PromptHandler: LLM call failed for tag #{tagIndex} '{fullTag}': {ex.Message}");
+            error = ex.Message;
+        }
+
+        if (string.IsNullOrEmpty(response))
+        {
+            return HandleFailedResponse(content, userInput, tagIndex, fullTag, error);
+        }
+
+        return ApplyPostFilter(response, userInput);
+    }
+
+    /// <summary>
+    /// Handles an LLM call that produced no usable response. Depending on "MP On Error" this either falls back to the
+    /// raw prompt text, or throws so that Swarm skips this one generation. Skipping only leaves the rest of a batch
+    /// running when Swarm's "Continue After Errors" parameter is enabled; otherwise Swarm cancels the whole queue.
+    /// </summary>
+    private string HandleFailedResponse(string content, T2IParamInput userInput, int tagIndex, string fullTag, string error)
+    {
+        var reason = string.IsNullOrWhiteSpace(error) ? "empty response from LLM" : error;
+        Logs.Error($"MagicPromptExtension.PromptHandler: LLM call failed for tag #{tagIndex} '{fullTag}': {reason}");
+
+        if (userInput.Get(_paramOnError, defVal: OnErrorSkip).Equals(OnErrorFallback, StringComparison.OrdinalIgnoreCase))
+        {
             return content;
         }
+
+        throw new SwarmReadableErrorException($"MagicPrompt: LLM request failed for tag #{tagIndex}, skipping this generation. {reason}");
     }
 
     private string MakeLlmRequest(string prompt, T2IParamInput userInput, string instructionId = null, string modelId = null)
@@ -150,7 +173,8 @@ public class PromptHandler
         var success = resp?["success"];
         if (success == null || !success.Value<bool>())
         {
-            return null;
+            var error = resp?["error"]?.ToString();
+            throw new SwarmReadableErrorException(string.IsNullOrWhiteSpace(error) ? "LLM backend returned an unspecified error" : error);
         }
 
         var llmResponse = resp?["response"]?.ToString();

@@ -16,6 +16,7 @@ public class MagicPromptExtension : Extension
     private static T2IRegisteredParam<string> _paramInstructions;
     private static T2IRegisteredParam<string> _paramPostFilter;
     private static T2IRegisteredParam<string> _paramThinking;
+    private static T2IRegisteredParam<string> _paramOnError;
 
     public override void OnPreInit()
     {
@@ -113,6 +114,20 @@ public class MagicPromptExtension : Extension
             OrderPriority: 6
         ));
 
+        _paramOnError = T2IParamTypes.Register<string>(new T2IParamType(
+            Name: "MP On Error",
+            Description: "What to do when the LLM request fails (error response, timeout, empty reply). " +
+                         "'Skip Generation' cancels just that image without touching the backend - enable Swarm's " +
+                         "'Continue After Errors' parameter to let the rest of the batch keep going, otherwise Swarm " +
+                         "cancels the whole queue on the first failure. " +
+                         "'Use Original Prompt' generates anyway using the raw text inside the mpprompt tag.",
+            Default: PromptHandler.OnErrorSkip,
+            IgnoreIf: PromptHandler.OnErrorSkip,
+            GetValues: _ => [$"{PromptHandler.OnErrorSkip}///Skip Generation", $"{PromptHandler.OnErrorFallback}///Use Original Prompt"],
+            Group: paramGroup,
+            OrderPriority: 7
+        ));
+
         PromptRegion.RegisterCustomPrefix("mpprompt");
         PromptRegion.RegisterCustomPrefix("mpresponse");
         T2IPromptHandling.PromptTagPostProcessors["mpprompt"] = ProcessMppromptTag;
@@ -141,7 +156,7 @@ public class MagicPromptExtension : Extension
     {
         T2IParamInput.LateSpecialParameterHandlers.Add(userInput =>
         {
-            var handler = new PromptHandler(_promptCache, _paramUseCache, _paramModelId, _paramInstructions, _paramPostFilter, _paramThinking);
+            var handler = new PromptHandler(_promptCache, _paramUseCache, _paramModelId, _paramInstructions, _paramPostFilter, _paramThinking, _paramOnError);
             handler.ProcessPrompt(userInput);
         });
     }
