@@ -1,0 +1,207 @@
+/* Prompt History Modal Styles
+=========================================================
+Styles for the prompt history modal - the list of recently
+used raw prompts opened from the sidebar's "Prompt History"
+button.
+=========================================================== */
+
+#promptHistoryModal {
+    --history-border: 1px solid var(--border-color);
+}
+
+#promptHistoryModal .modal-content {
+    background: var(--background);
+    border: var(--history-border);
+    border-radius: 8px;
+}
+
+#promptHistoryModal .modal-header {
+    align-items: center;
+    gap: 0.75rem;
+}
+
+#promptHistoryModal .mp-history-count {
+    color: var(--text-soft, var(--text));
+    font-size: 0.85rem;
+    opacity: 0.8;
+    white-space: nowrap;
+}
+
+#promptHistoryModal .mp-history-help {
+    color: var(--text-soft, var(--text));
+    font-size: 0.85rem;
+    opacity: 0.8;
+    margin-bottom: 0.75rem;
+}
+
+/* Bootstrap's default control colors don't follow the SwarmUI theme, so restate them here
+   the same way the settings modal does. */
+#promptHistoryModal .form-control {
+    background: var(--background);
+    border: var(--history-border);
+    border-radius: 4px;
+    color: var(--text);
+    padding: 0.4rem 0.5rem;
+    width: 100%;
+}
+
+#promptHistoryModal .form-control:focus {
+    background: var(--background);
+    border-color: var(--emphasis);
+    box-shadow: none;
+    color: var(--text);
+}
+
+#promptHistoryModal .form-control::placeholder {
+    color: var(--text-soft, var(--text));
+    opacity: 0.6;
+}
+
+#promptHistoryModal .mp-history-filter {
+    align-items: center;
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+
+#promptHistoryModal .mp-history-filter .form-label {
+    color: var(--text-soft, var(--text));
+    flex: 0 0 auto;
+    font-size: 0.85rem;
+    margin: 0;
+}
+
+#promptHistoryModal .mp-history-list {
+    max-height: min(60vh, 34rem);
+    overflow-y: auto;
+    border: var(--history-border);
+    border-radius: 4px;
+}
+
+#promptHistoryModal .mp-history-list:empty {
+    border: none;
+}
+
+#promptHistoryModal .mp-history-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    padding: 0.5rem 0.6rem;
+    border-bottom: var(--history-border);
+    cursor: pointer;
+}
+
+#promptHistoryModal .mp-history-item:last-child {
+    border-bottom: none;
+}
+
+#promptHistoryModal .mp-history-item:hover,
+#promptHistoryModal .mp-history-item:focus-visible {
+    background-color: var(--background-gray);
+    outline: none;
+}
+
+#promptHistoryModal .mp-history-item-body {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+#promptHistoryModal .mp-history-text {
+    color: var(--text);
+    font-family: var(--font-monospace, monospace);
+    font-size: 0.85rem;
+    line-height: 1.35;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    /* Long prompts clamp to a fixed height so one entry can't swallow the list, and so rows never
+       resize under the cursor. The full text is on the row's tooltip. */
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    overflow: hidden;
+}
+
+#promptHistoryModal .mp-history-meta {
+    color: var(--text-soft, var(--text));
+    font-size: 0.75rem;
+    opacity: 0.7;
+    margin-top: 0.2rem;
+}
+
+#promptHistoryModal .mp-history-actions {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 0.15rem;
+}
+
+#promptHistoryModal .mp-history-action {
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    line-height: 1;
+    padding: 0.25rem 0.35rem;
+}
+
+#promptHistoryModal .mp-history-action:hover {
+    background-color: var(--shadow);
+    border-color: var(--border-color);
+}
+
+#promptHistoryModal .mp-history-action.danger:hover {
+    background-color: var(--danger-color, #dc3545);
+}
+
+#promptHistoryModal .mp-history-empty {
+    color: var(--text-soft, var(--text));
+    font-size: 0.9rem;
+    opacity: 0.8;
+    padding: 1.5rem 0;
+    text-align: center;
+}
+
+#promptHistoryModal .mp-history-clear-btn {
+    background-color: var(--background-gray);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text);
+    cursor: pointer;
+    font-size: 0.85rem;
+    padding: 0.3rem 0.7rem;
+}
+
+#promptHistoryModal .mp-history-clear-btn:hover {
+    background-color: var(--shadow);
+}
+
+/* Armed = one more click wipes the list. */
+#promptHistoryModal .mp-history-clear-btn.armed {
+    background-color: var(--danger-color, #dc3545);
+    border-color: var(--danger-color, #dc3545);
+    color: white;
+}
+
+#promptHistoryModal .modal-footer {
+    justify-content: space-between;
+}
+
+#promptHistoryModal .mp-history-hint {
+    color: var(--text-soft, var(--text));
+    font-size: 0.8rem;
+    opacity: 0.7;
+}
+
+#promptHistoryModal .mp-cancel-btn {
+    background-color: var(--background-gray);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text);
+    cursor: pointer;
+    padding: 0.5rem 1rem;
+}
+
+#promptHistoryModal .mp-cancel-btn:hover {
+    background-color: var(--shadow);
+}

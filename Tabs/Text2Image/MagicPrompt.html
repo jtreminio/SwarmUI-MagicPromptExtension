@@ -418,6 +418,33 @@
         </div>
     </div>
 
+    <!-- Prompt History Modal -->
+    <div class="modal fade magicprompt" id="promptHistoryModal" tabindex="-1" aria-labelledby="promptHistoryModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title translate" id="promptHistoryModalLabel">Prompt History</h5>
+                    <span id="promptHistoryCount" class="mp-history-count"></span>
+                    <button type="button" class="mp-history-clear-btn ms-auto" id="promptHistoryClearBtn">Clear All</button>
+                    <button type="button" class="btn-close translate" aria-label="Close" onclick="closePromptHistoryModal()"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="mp-history-help">The last 100 unique prompts you sent to generate, exactly as you typed them - wildcards, variables and mpprompt tags left unexpanded.</p>
+                    <div class="mp-history-filter">
+                        <label class="form-label" for="promptHistoryFilter">Filter</label>
+                        <input type="search" class="form-control" id="promptHistoryFilter" autocomplete="off" placeholder="Search prompts">
+                    </div>
+                    <div id="promptHistoryList" class="mp-history-list" role="list"></div>
+                    <p id="promptHistoryEmpty" class="mp-history-empty" hidden></p>
+                </div>
+                <div class="modal-footer">
+                    <span class="mp-history-hint">Click a prompt to load it into the prompt box.</span>
+                    <button type="button" class="mp-cancel-btn" onclick="closePromptHistoryModal()">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Custom Instruction Modal -->
     <div class="modal fade" id="customInstructionModal" tabindex="-1" aria-labelledby="customInstructionModalLabel" aria-hidden="true">
         <div class="modal-dialog">
