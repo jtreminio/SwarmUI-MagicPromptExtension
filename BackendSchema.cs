@@ -182,10 +182,17 @@ public static class BackendSchema
         {
             ["model"] = model,
             ["temperature"] = 1.0,
-            // Reasoning tokens count against max_tokens, so grow the limit with the thinking level.
-            ["max_tokens"] = MaxTokensForThinking(thinking, 1000),
             ["stream"] = false
         };
+        if (isOpenRouter)
+        {
+            body["max_completion_tokens"] = 4096;
+        }
+        else
+        {
+            // Reasoning tokens count against max_tokens, so grow the limit with the thinking level.
+            body["max_tokens"] = MaxTokensForThinking(thinking, 1000);
+        }
         if (messageType == MessageType.Vision && content.Media?.Any() == true)
         {
             List<object> contentList = [];
@@ -228,8 +235,8 @@ public static class BackendSchema
             // silently routes many reasoning-capable models, so "none" disables reasoning
             // explicitly rather than omitting the field.
             body["reasoning"] = thinking == "none"
-                ? new { enabled = false }
-                : new { effort = thinking };
+                ? new { enabled = false, exclude = true }
+                : new { effort = thinking, exclude = true };
         }
         else if (thinking != "none")
         {
