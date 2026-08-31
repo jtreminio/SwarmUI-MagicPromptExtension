@@ -362,14 +362,33 @@ public class LLMAPICalls : MagicPromptAPI
         """)]
     public static async Task<JObject> MagicPromptPhoneHome(JObject requestData, Session session = null)
     {
+        CancellationToken interruptToken = session?.SessInterrupt.Token ?? CancellationToken.None;
         try
         {
-            long seed = requestData["seed"]?.Value<long>() ?? -1;
+            return await MagicPromptPhoneHomeInternal(requestData, session, interruptToken);
+        }
+        catch (OperationCanceledException) when (interruptToken.IsCancellationRequested)
+        {
+            Logs.Debug("MagicPromptExtension.LLMAPICalls: request cancelled by Swarm interrupt");
+            return CreateErrorResponse("MagicPrompt request was cancelled");
+        }
+    }
 
+    internal static Task<JObject> MagicPromptPhoneHomeForGeneration(JObject requestData, Session session, CancellationToken interruptToken)
+    {
+        return MagicPromptPhoneHomeInternal(requestData, session, interruptToken);
+    }
+
+    private static async Task<JObject> MagicPromptPhoneHomeInternal(JObject requestData, Session session, CancellationToken interruptToken)
+    {
+        try
+        {
             if (requestData == null)
             {
                 return CreateErrorResponse("Request data is null");
             }
+            long seed = requestData["seed"]?.Value<long>() ?? -1;
+            interruptToken.ThrowIfCancellationRequested();
             // Safely parse message content
             JToken messageContentToken = requestData["messageContent"];
             if (messageContentToken == null)
@@ -488,9 +507,10 @@ public class LLMAPICalls : MagicPromptAPI
                 int defaultTimeout = backend == "ollama" ? 120 : 60;
                 int timeoutSec = GetBackendTimeout(settings, backend, defaultTimeout);
                 Logs.Debug($"[MagicPrompt] Using timeout of {timeoutSec} seconds for {backend}");
-                using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(timeoutSec));
-                HttpResponseMessage response = await HttpClient.SendAsync(request, cts.Token);
-                string responseContent = await response.Content.ReadAsStringAsync();
+                using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSec));
+                using var requestCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, interruptToken);
+                HttpResponseMessage response = await HttpClient.SendAsync(request, requestCts.Token);
+                string responseContent = await response.Content.ReadAsStringAsync(requestCts.Token);
                 // Handle API errors indicated by status code
                 if (!response.IsSuccessStatusCode)
                 {
@@ -523,7 +543,11 @@ public class LLMAPICalls : MagicPromptAPI
                     backend)
                 );
             }
-            catch (System.Threading.Tasks.TaskCanceledException)
+            catch (OperationCanceledException) when (interruptToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (TaskCanceledException)
             {
                 Logs.Error($"MagicPromptExtension.LLMAPICalls: Request timed out for backend {backend} ({endpoint})");
                 return CreateErrorResponse(ErrorHandler.FormatErrorMessage(ErrorType.RequestTimeout, $"Request exceeded timeout at {endpoint}", backend));
@@ -543,6 +567,10 @@ public class LLMAPICalls : MagicPromptAPI
                 Logs.Error($"MagicPromptExtension.LLMAPICalls: Error in MagicPromptPhoneHome: {ex.Message}");
                 return CreateErrorResponse(ErrorHandler.FormatErrorMessage(ErrorType.GenericException, ex.Message, backend));
             }
+        }
+        catch (OperationCanceledException) when (interruptToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {

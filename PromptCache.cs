@@ -39,9 +39,16 @@ public class PromptCache
     /// </summary>
     public string GetOrCreate(string prompt, string instructionId, string modelId, string thinking, Func<string> createValue, int timeoutMs, out string error)
     {
+        return GetOrCreate(prompt, instructionId, modelId, thinking, createValue, timeoutMs, CancellationToken.None, out error);
+    }
+
+    public string GetOrCreate(string prompt, string instructionId, string modelId, string thinking, Func<string> createValue, int timeoutMs, CancellationToken cancellationToken, out string error)
+    {
         var cacheKey = BuildCacheKey(prompt, instructionId, modelId, thinking);
         var effectiveTimeout = timeoutMs > 0 ? timeoutMs : DefaultTimeoutMs;
         error = null;
+
+        cancellationToken.ThrowIfCancellationRequested();
 
         lock (_lock)
         {
@@ -57,6 +64,7 @@ public class PromptCache
         {
             while (true)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 TaskCompletionSource<PendingResult> pendingTcs = null;
 
                 lock (_lock)
@@ -88,7 +96,7 @@ public class PromptCache
                 // If another thread was already fetching, wait for it OUTSIDE the lock
                 if (pendingTcs != null)
                 {
-                    var waited = WaitForPendingRequest(pendingTcs, effectiveTimeout, out bool retryable, out string waitError);
+                    var waited = WaitForPendingRequest(pendingTcs, effectiveTimeout, cancellationToken, out bool retryable, out string waitError);
                     if (waited != null)
                     {
                         return waited;
@@ -115,6 +123,26 @@ public class PromptCache
                         result = null;
                         attemptError = "LLM returned an empty response";
                     }
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    lock (_lock)
+                    {
+                        int attempts = _attemptCounts.GetValueOrDefault(cacheKey) - 1;
+                        if (attempts > 0)
+                        {
+                            _attemptCounts[cacheKey] = attempts;
+                        }
+                        else
+                        {
+                            _attemptCounts.Remove(cacheKey);
+                        }
+
+                        SignalPendingRequestLocked(cacheKey, null, "The in-flight LLM request was cancelled");
+                        CleanupPendingRequestLocked(cacheKey);
+                    }
+
+                    throw;
                 }
                 catch (Exception ex)
                 {
@@ -265,7 +293,7 @@ public class PromptCache
 
     /// <summary>Waits on an in-flight attempt owned by another thread. Returns the value on success, or null on
     /// failure with <paramref name="retryable"/> set when it is worth looping back for another attempt.</summary>
-    private static string WaitForPendingRequest(TaskCompletionSource<PendingResult> tcs, int timeoutMs, out bool retryable, out string error)
+    private static string WaitForPendingRequest(TaskCompletionSource<PendingResult> tcs, int timeoutMs, CancellationToken cancellationToken, out bool retryable, out string error)
     {
         retryable = false;
         error = null;
@@ -273,7 +301,7 @@ public class PromptCache
 
         try
         {
-            if (!tcs.Task.Wait(timeoutMs))
+            if (!tcs.Task.Wait(timeoutMs, cancellationToken))
             {
                 Logs.Warning($"MagicPromptExtension.PromptCache: timeout after {timeoutMs}ms waiting for pending request");
                 error = $"Timed out after {timeoutMs}ms waiting on an in-flight LLM request";
@@ -293,6 +321,11 @@ public class PromptCache
 
             Logs.Debug($"MagicPromptExtension.PromptCache: waited {stopwatch.ElapsedMilliseconds}ms for owner request");
             return result.Value;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            Logs.Debug("MagicPromptExtension.PromptCache: cache wait cancelled by Swarm interrupt");
+            throw;
         }
         catch (OperationCanceledException)
         {

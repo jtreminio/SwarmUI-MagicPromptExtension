@@ -89,7 +89,9 @@ public class PromptHandler
 
             var llmResponse = GetLlmResponse(mppromptContent, userInput, instructionId, tagModelId, useCache, i, fullTag);
             llmResponses.Add(llmResponse);
-            prompt = prompt.Replace(fullTag, printResponse ? llmResponse : "");
+            prompt = printResponse
+                ? InjectLlmResponse(prompt, fullTag, llmResponse)
+                : prompt.Replace(fullTag, "");
         }
 
         RecordModelsUsed(userInput, modelsUsed);
@@ -107,12 +109,16 @@ public class PromptHandler
             {
                 var timeoutMs = LLMAPICalls.GetChatBackendTimeoutMs();
                 var thinking = userInput.Get(_paramThinking, defVal: "none");
-                response = _cache.GetOrCreate(content, instructionId, modelId, thinking, () => MakeLlmRequest(content, userInput, instructionId, modelId), timeoutMs, out error);
+                response = _cache.GetOrCreate(content, instructionId, modelId, thinking, () => MakeLlmRequest(content, userInput, instructionId, modelId), timeoutMs, userInput.InterruptToken, out error);
             }
             else
             {
                 response = MakeLlmRequest(content, userInput, instructionId, modelId);
             }
+        }
+        catch (OperationCanceledException) when (userInput.InterruptToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -166,7 +172,7 @@ public class PromptHandler
             ["thinking"] = userInput.Get(_paramThinking, defVal: "none")
         };
 
-        var resp = LLMAPICalls.MagicPromptPhoneHome(request, userInput.SourceSession)
+        var resp = LLMAPICalls.MagicPromptPhoneHomeForGeneration(request, userInput.SourceSession, userInput.InterruptToken)
             .GetAwaiter()
             .GetResult();
 
@@ -361,12 +367,35 @@ public class PromptHandler
         return MpresponseRegex.Replace(prompt, "");
     }
 
+    private static string InjectLlmResponse(string prompt, string fullTag, string response)
+    {
+        var replacement = response.Trim();
+        var pattern = $@"(?<before>(?:\r\n|\r|\n)+)?{Regex.Escape(fullTag)}(?<after>(?:\r\n|\r|\n)+)?";
+
+        return Regex.Replace(prompt, pattern, match =>
+        {
+            var before = NormalizeLineBreak(match.Groups["before"].Value);
+            var after = NormalizeLineBreak(match.Groups["after"].Value);
+            return $"{before}{replacement}{after}";
+        });
+    }
+
+    private static string NormalizeLineBreak(string lineBreaks)
+    {
+        if (lineBreaks.Length == 0)
+        {
+            return "";
+        }
+
+        return lineBreaks.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : lineBreaks[0].ToString();
+    }
+
     private string ApplyPostFilter(string response, T2IParamInput userInput)
     {
         string postFilter = userInput.Get(_paramPostFilter, defVal: string.Empty);
         if (string.IsNullOrEmpty(postFilter))
         {
-            return response;
+            return response.Trim();
         }
 
         string[] filters = postFilter.Split('\n', StringSplitOptions.RemoveEmptyEntries);
