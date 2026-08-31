@@ -168,7 +168,6 @@ public class PromptHandler
             ["messageType"] = "Text",
             ["action"] = "prompt",
             ["session_id"] = userInput.SourceSession?.ID ?? string.Empty,
-            ["seed"] = userInput.Get(T2IParamTypes.Seed, -1).ToString(),
             ["thinking"] = userInput.Get(_paramThinking, defVal: "none")
         };
 

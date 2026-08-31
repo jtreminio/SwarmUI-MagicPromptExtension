@@ -38,7 +38,7 @@ public static class BackendSchema
     /// <param name="messageType">Type of message (Text or Vision)</param>
     /// <param name="thinking">Thinking/reasoning effort: "none", "low", "medium", or "high"</param>
     /// <returns>Returns an object with the schema type for the backend.</returns>
-    public static object GetSchemaType(string type, MessageContent content, string model, MessageType messageType = MessageType.Text, long seed = -1, string thinking = "none")
+    public static object GetSchemaType(string type, MessageContent content, string model, MessageType messageType = MessageType.Text, string thinking = "none")
     {
         if (content == null || string.IsNullOrEmpty(model))
         {
@@ -49,10 +49,10 @@ public static class BackendSchema
         _ = content.KeepAlive;
         return type switch
         {
-            "ollama" => OllamaRequestBody(content, model, messageType, seed, thinking),
-            "grok" => OpenAICompatibleRequestBody(content, model, messageType, preferPngForBase64: true, isOpenRouter: false, seed, thinking),
-            "openai" or "openaiapi" => OpenAICompatibleRequestBody(content, model, messageType, preferPngForBase64: false, isOpenRouter: false, seed, thinking),
-            "openrouter" => OpenAICompatibleRequestBody(content, model, messageType, preferPngForBase64: false, isOpenRouter: true, seed, thinking),
+            "ollama" => OllamaRequestBody(content, model, messageType, thinking),
+            "grok" => OpenAICompatibleRequestBody(content, model, messageType, preferPngForBase64: true, isOpenRouter: false, thinking),
+            "openai" or "openaiapi" => OpenAICompatibleRequestBody(content, model, messageType, preferPngForBase64: false, isOpenRouter: false, thinking),
+            "openrouter" => OpenAICompatibleRequestBody(content, model, messageType, preferPngForBase64: false, isOpenRouter: true, thinking),
             "anthropic" => AnthropicRequestBody(content, model, messageType, thinking),
             _ => throw new ArgumentException($"Unsupported backend type: {type}")
         };
@@ -124,7 +124,7 @@ public static class BackendSchema
     }
 
     /// <summary>Generates a request body for Ollama backend.</summary>
-    private static object OllamaRequestBody(MessageContent content, string model, MessageType messageType, long seed = -1, string thinking = "none")
+    private static object OllamaRequestBody(MessageContent content, string model, MessageType messageType, string thinking = "none")
     {
         List<object> messages = [];
         if (!string.IsNullOrEmpty(content.Instructions))
@@ -132,9 +132,7 @@ public static class BackendSchema
             messages.Add(new { role = "system", content = content.Instructions });
         }
 
-        object options = seed == -1
-            ? new { temperature = 1.0, top_p = 0.9 }
-            : new { temperature = 1.0, top_p = 0.9, seed };
+        object options = new { temperature = 1.0, top_p = 0.9 };
 
         if (messageType == MessageType.Vision && content.Media?.Any() == true)
         {
@@ -168,7 +166,7 @@ public static class BackendSchema
     }
 
     /// <summary>Generates a request body for OpenAI and compatible backends.</summary>
-    private static object OpenAICompatibleRequestBody(MessageContent content, string model, MessageType messageType, bool preferPngForBase64, bool isOpenRouter, long seed = -1, string thinking = "none")
+    private static object OpenAICompatibleRequestBody(MessageContent content, string model, MessageType messageType, bool preferPngForBase64, bool isOpenRouter, string thinking = "none")
     {
         List<object> messages = [];
         // Add system message if instructions exist
@@ -224,10 +222,6 @@ public static class BackendSchema
             body["top_p"] = 0.9;
         }
         body["messages"] = messages.ToArray();
-        if (seed != -1)
-        {
-            body["seed"] = seed;
-        }
         if (isOpenRouter)
         {
             // OpenRouter's unified reasoning switch. Reasoning-capable models honor it; models

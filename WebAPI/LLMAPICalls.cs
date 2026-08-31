@@ -387,7 +387,6 @@ public class LLMAPICalls : MagicPromptAPI
             {
                 return CreateErrorResponse("Request data is null");
             }
-            long seed = requestData["seed"]?.Value<long>() ?? -1;
             interruptToken.ThrowIfCancellationRequested();
             // Safely parse message content
             JToken messageContentToken = requestData["messageContent"];
@@ -489,7 +488,7 @@ public class LLMAPICalls : MagicPromptAPI
             object requestBody;
             try
             {
-                requestBody = GetSchemaType(backend, messageContent, modelId, messageType, seed, thinking);
+                requestBody = GetSchemaType(backend, messageContent, modelId, messageType, thinking);
             }
             catch (ArgumentException ex)
             {
