@@ -631,6 +631,55 @@ function wildcardSeedGenerator() {
     }, true);
 }
 
+function magicPromptRefineImage(src) {
+    let metadataFull;
+    try {
+        let readable = interpretMetadata(currentMetadataVal);
+        metadataFull = readable ? JSON.parse(readable) : {};
+        if (typeof metadataFull.sui_image_params?.prompt !== 'string') {
+            showError('Refine Img requires a finalized prompt in the selected image metadata.');
+            return;
+        }
+    } catch (error) {
+        showError(`Refine Img could not read the selected image metadata: ${error.message}`);
+        return;
+    }
+    toDataURL(src, url => {
+        let inputOverrides = {
+            initimage: url,
+            initimagecreativity: 0,
+            images: 1,
+            prompt: metadataFull.sui_image_params.prompt
+        };
+        let metadata = metadataFull.sui_image_params;
+        if ('seed' in metadata && !('refinercontrolpercentage' in metadata)) {
+            inputOverrides.seed = metadata.seed;
+        }
+        let togglerInit = getRequiredElementById('input_group_content_initimage_toggle');
+        let togglerRefine = getRequiredElementById('input_group_content_refineupscale_toggle');
+        let togglerInitOriginal = togglerInit.checked;
+        let togglerRefineOriginal = togglerRefine.checked;
+        togglerInit.checked = false;
+        togglerRefine.checked = true;
+        triggerChangeFor(togglerInit);
+        triggerChangeFor(togglerRefine);
+        mainGenHandler.doGenerate(inputOverrides, {}, actualInput => {
+            actualInput.extra_metadata ||= {};
+            actualInput.extra_metadata.mp_is_refining = true;
+            actualInput.extra_metadata.mp_refined_prompt = metadata.prompt;
+            if (typeof metadataFull.sui_extra_data?.original_prompt === 'string') {
+                actualInput.extra_metadata.original_prompt = metadataFull.sui_extra_data.original_prompt;
+            }
+            togglerInit.checked = togglerInitOriginal;
+            togglerRefine.checked = togglerRefineOriginal;
+            triggerChangeFor(togglerInit);
+            triggerChangeFor(togglerRefine);
+        });
+    });
+}
+
+registerMediaButton('Refine Img', magicPromptRefineImage, 'Refines this image using its finalized prompt', ['image'], true, true);
+
 /**
  * Initializes on DOM load
  */

@@ -51,6 +51,18 @@ public class PromptHandler
         var modelId = userInput.Get(_paramModelId);
         var useCache = userInput.Get(_paramUseCache);
 
+        if (userInput.ExtraMeta.Remove("mp_is_refining", out var isRefiningValue)
+            && bool.TryParse(isRefiningValue as string, out var isRefining)
+            && isRefining)
+        {
+            if (!userInput.ExtraMeta.Remove("mp_refined_prompt", out var refinedPromptValue) || refinedPromptValue is not string refinedPrompt)
+            {
+                throw new SwarmUserErrorException("Refine Img requires a finalized prompt in the selected image metadata.");
+            }
+            FinalizePrompt(refinedPrompt, "", userInput);
+            return;
+        }
+
         var matches = MppromptRegex.Matches(prompt);
 
         if (matches.Count == 0)
@@ -58,6 +70,11 @@ public class PromptHandler
             prompt = CleanOrphanedMpresponse(prompt);
             FinalizePrompt(prompt, "", userInput);
             return;
+        }
+
+        if (!userInput.ExtraMeta.ContainsKey("original_prompt"))
+        {
+            userInput.ExtraMeta["original_prompt"] = prompt;
         }
 
         if (string.IsNullOrWhiteSpace(modelId))
