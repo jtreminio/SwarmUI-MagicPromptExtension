@@ -85,11 +85,6 @@ public class PromptHandler
             return;
         }
 
-        if (!useCache)
-        {
-            _cache.Clear();
-        }
-
         var firstMppromptContent = matches[0].Groups[2].Value;
         var llmResponses = new List<string>();
         var modelsUsed = new List<string>();
@@ -102,9 +97,10 @@ public class PromptHandler
             ParsePreData(preDataRaw, out string instructionId, out string modelSpec, out bool printResponse);
             var mppromptContent = ResolveMpresponseReferences(match.Groups[2].Value, llmResponses);
             var tagModelId = ResolveModel(modelSpec, userInput);
-            modelsUsed.Add(string.IsNullOrWhiteSpace(tagModelId) ? modelId : tagModelId);
+            var effectiveModelId = string.IsNullOrWhiteSpace(tagModelId) ? modelId : tagModelId;
+            modelsUsed.Add(effectiveModelId);
 
-            var llmResponse = GetLlmResponse(mppromptContent, userInput, instructionId, tagModelId, useCache, i, fullTag);
+            var llmResponse = GetLlmResponse(mppromptContent, userInput, instructionId, effectiveModelId, useCache, i, fullTag);
             llmResponses.Add(llmResponse);
             prompt = printResponse
                 ? InjectLlmResponse(prompt, fullTag, llmResponse)
@@ -122,16 +118,12 @@ public class PromptHandler
         string error = null;
         try
         {
-            if (useCache)
-            {
-                var timeoutMs = LLMAPICalls.GetChatBackendTimeoutMs();
-                var thinking = userInput.Get(_paramThinking, defVal: "none");
-                response = _cache.GetOrCreate(content, instructionId, modelId, thinking, () => MakeLlmRequest(content, userInput, instructionId, modelId), timeoutMs, userInput.InterruptToken, out error);
-            }
-            else
-            {
-                response = MakeLlmRequest(content, userInput, instructionId, modelId);
-            }
+            var timeoutMs = LLMAPICalls.GetChatBackendTimeoutMs(out var backendIdentity);
+            var thinking = userInput.Get(_paramThinking, defVal: "none");
+            var seed = userInput.Get(T2IParamTypes.Seed, -1);
+            var instructions = InstructionResolver.Resolve(userInput, instructionId, _paramInstructions);
+            response = _cache.GetOrCreate(content, instructions, modelId, thinking, backendIdentity, seed, useCache,
+                () => MakeLlmRequest(content, userInput, instructions, modelId, thinking), timeoutMs, userInput.InterruptToken, out error);
         }
         catch (OperationCanceledException) when (userInput.InterruptToken.IsCancellationRequested)
         {
@@ -168,24 +160,20 @@ public class PromptHandler
         throw new SwarmReadableErrorException($"MagicPrompt: LLM request failed for tag #{tagIndex}, skipping this generation. {reason}");
     }
 
-    private string MakeLlmRequest(string prompt, T2IParamInput userInput, string instructionId = null, string modelId = null)
+    private static string MakeLlmRequest(string prompt, T2IParamInput userInput, string instructions, string modelId, string thinking)
     {
-        var effectiveModel = string.IsNullOrWhiteSpace(modelId)
-            ? userInput.Get(_paramModelId, defVal: string.Empty)
-            : modelId;
-
         var request = new JObject
         {
             ["messageContent"] = new JObject
             {
                 ["text"] = prompt,
-                ["instructions"] = InstructionResolver.Resolve(userInput, instructionId, _paramInstructions)
+                ["instructions"] = instructions
             },
-            ["modelId"] = effectiveModel,
+            ["modelId"] = modelId,
             ["messageType"] = "Text",
             ["action"] = "prompt",
             ["session_id"] = userInput.SourceSession?.ID ?? string.Empty,
-            ["thinking"] = userInput.Get(_paramThinking, defVal: "none")
+            ["thinking"] = thinking
         };
 
         var resp = LLMAPICalls.MagicPromptPhoneHomeForGeneration(request, userInput.SourceSession, userInput.InterruptToken)

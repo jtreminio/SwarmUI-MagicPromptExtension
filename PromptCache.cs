@@ -4,12 +4,12 @@ namespace Hartsy.Extensions.MagicPromptExtension;
 
 public class PromptCache
 {
-    private readonly Dictionary<string, string> _cache = new();
-    private readonly LinkedList<string> _accessOrder = new();
-    private readonly Dictionary<string, LinkedListNode<string>> _cacheNodes = new();
-    private readonly Dictionary<string, TaskCompletionSource<PendingResult>> _pendingRequests = new();
-    private readonly Dictionary<string, int> _attemptCounts = new();
-    private readonly Dictionary<string, int> _activeCallers = new();
+    private readonly Dictionary<CacheKey, string> _cache = new();
+    private readonly LinkedList<CacheKey> _accessOrder = new();
+    private readonly Dictionary<CacheKey, LinkedListNode<CacheKey>> _cacheNodes = new();
+    private readonly Dictionary<CacheKey, TaskCompletionSource<PendingResult>> _pendingRequests = new();
+    private readonly Dictionary<CacheKey, int> _attemptCounts = new();
+    private readonly Dictionary<CacheKey, int> _activeCallers = new();
     private readonly object _lock = new();
 
     private readonly int _maxSize;
@@ -22,6 +22,9 @@ public class PromptCache
     /// <summary>Outcome handed from the thread that owned an attempt to the threads waiting on it.
     /// A null <see cref="Value"/> means the attempt failed and <see cref="Error"/> explains why.</summary>
     private sealed record PendingResult(string Value, string Error);
+
+    /// <summary>A null seed represents normal cache mode, which reuses responses across image seeds.</summary>
+    private readonly record struct CacheKey(string Prompt, string Instructions, string ModelId, string Backend, string Thinking, long? Seed);
 
     public PromptCache(int maxSize = 1000)
     {
@@ -39,12 +42,21 @@ public class PromptCache
     /// </summary>
     public string GetOrCreate(string prompt, string instructionId, string modelId, string thinking, Func<string> createValue, int timeoutMs, out string error)
     {
-        return GetOrCreate(prompt, instructionId, modelId, thinking, createValue, timeoutMs, CancellationToken.None, out error);
+        return GetOrCreate(prompt, instructionId, modelId, thinking, string.Empty, 0, true, createValue, timeoutMs, CancellationToken.None, out error);
     }
 
     public string GetOrCreate(string prompt, string instructionId, string modelId, string thinking, Func<string> createValue, int timeoutMs, CancellationToken cancellationToken, out string error)
     {
-        var cacheKey = BuildCacheKey(prompt, instructionId, modelId, thinking);
+        return GetOrCreate(prompt, instructionId, modelId, thinking, string.Empty, 0, true, createValue, timeoutMs, cancellationToken, out error);
+    }
+
+    /// <summary>
+    /// Gets a cached result using either normal matching (any image seed) or strict matching (same image seed),
+    /// or creates and caches a new result.
+    /// </summary>
+    public string GetOrCreate(string prompt, string instructionId, string modelId, string thinking, string backend, long seed, bool useCache, Func<string> createValue, int timeoutMs, CancellationToken cancellationToken, out string error)
+    {
+        var cacheKey = BuildCacheKey(prompt, instructionId, modelId, backend, thinking, useCache ? null : seed);
         var effectiveTimeout = timeoutMs > 0 ? timeoutMs : DefaultTimeoutMs;
         error = null;
 
@@ -208,22 +220,17 @@ public class PromptCache
         }
     }
 
-    private static string BuildCacheKey(string prompt, string instructionId, string modelId, string thinking)
+    private static CacheKey BuildCacheKey(string prompt, string instructions, string modelId, string backend, string thinking, long? seed)
     {
-        var key = NormalizePrompt(prompt);
-        if (!string.IsNullOrEmpty(instructionId))
-        {
-            key += $"||{instructionId.ToLowerInvariant()}";
-        }
-        if (!string.IsNullOrEmpty(modelId))
-        {
-            key += $"##{modelId.ToLowerInvariant()}";
-        }
-        if (!string.IsNullOrEmpty(thinking) && !thinking.Equals("none", StringComparison.OrdinalIgnoreCase))
-        {
-            key += $"@@{thinking.ToLowerInvariant()}";
-        }
-        return key;
+        return new CacheKey(
+            NormalizePrompt(prompt),
+            instructions ?? string.Empty,
+            modelId?.ToLowerInvariant() ?? string.Empty,
+            backend ?? string.Empty,
+            string.IsNullOrWhiteSpace(thinking) || thinking.Equals("none", StringComparison.OrdinalIgnoreCase)
+                ? string.Empty
+                : thinking.ToLowerInvariant(),
+            seed);
     }
 
     private static string NormalizePrompt(string prompt)
@@ -233,14 +240,16 @@ public class PromptCache
             : new string(prompt.Trim().ToLowerInvariant().Where(c => !char.IsWhiteSpace(c)).ToArray());
     }
 
-    private bool TryGetFromCacheLocked(string key, out string cachedResult)
+    private bool TryGetFromCacheLocked(CacheKey key, out string cachedResult)
     {
         if (!_cache.TryGetValue(key, out cachedResult))
         {
             return false;
         }
 
-        Logs.Debug("MagicPromptExtension.PromptCache: cache hit");
+        Logs.Debug(key.Seed.HasValue
+            ? "MagicPromptExtension.PromptCache: strict cache hit (prompt, seed, and model matched)"
+            : "MagicPromptExtension.PromptCache: cache hit");
         if (_cacheNodes.TryGetValue(key, out var node))
         {
             _accessOrder.Remove(node);
@@ -249,7 +258,7 @@ public class PromptCache
         return true;
     }
 
-    private void AddToCacheLocked(string key, string value)
+    private void AddToCacheLocked(CacheKey key, string value)
     {
         while (_cache.Count >= _maxSize)
         {
@@ -278,7 +287,7 @@ public class PromptCache
         _cacheNodes[key] = newNode;
     }
 
-    private void SignalPendingRequestLocked(string key, string result, string error)
+    private void SignalPendingRequestLocked(CacheKey key, string result, string error)
     {
         if (_pendingRequests.TryGetValue(key, out var tcs))
         {
@@ -286,7 +295,7 @@ public class PromptCache
         }
     }
 
-    private void CleanupPendingRequestLocked(string key)
+    private void CleanupPendingRequestLocked(CacheKey key)
     {
         _pendingRequests.Remove(key);
     }

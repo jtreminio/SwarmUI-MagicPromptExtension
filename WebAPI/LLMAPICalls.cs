@@ -303,6 +303,13 @@ public class LLMAPICalls : MagicPromptAPI
 
     public static int GetChatBackendTimeoutMs()
     {
+        return GetChatBackendTimeoutMs(out _);
+    }
+
+    /// <summary>Gets the chat timeout and a stable identity for the configured backend endpoint.</summary>
+    public static int GetChatBackendTimeoutMs(out string backendIdentity)
+    {
+        backendIdentity = string.Empty;
         try
         {
             var sessionSettings = SessionSettings.GetMagicPromptSettings().GetAwaiter().GetResult();
@@ -313,6 +320,7 @@ public class LLMAPICalls : MagicPromptAPI
 
             var settings = sessionSettings["settings"] as JObject;
             var backend = settings?["backend"]?.ToString()?.ToLower();
+            backendIdentity = $"{backend}\n{GetEndpoint(backend, settings, "chat")}";
             int defaultTimeout = backend == "ollama" || backend == "openaiapi" ? 120 : 60;
             int timeoutSec = GetBackendTimeout(settings, backend, defaultTimeout);
 

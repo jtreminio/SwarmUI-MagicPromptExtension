@@ -319,115 +319,6 @@ if (!window.MP) {
 };
 
 /**
- * Handles the enhance prompt button click
- * Takes the current prompt text and enhances it using the LLM
- */
-
-async function handleEnhancePrompt() {
-  
-  const promptTextArea = document.getElementById("alt_prompt_textbox");
-
-  if (window.isEnhancing) return;
-  const loadingAnimation = document.getElementById("prompt_loading_animation");
-  try {
-    window.isEnhancing = true;
-    // Show loading animation
-    if (loadingAnimation) loadingAnimation.classList.add("active");
-    let input = promptTextArea.value.trim();
-     if(!input) {
-        // Create a random prompt if the input is empty
-        const inputPayload = MP.RequestBuilder.createRequestPayload(
-            'Generate a creative and interesting random prompt for image generation.',
-            null,
-            'random-prompt'
-        );
-        const response = await MP.APIClient.makeRequest(inputPayload);
-        if (response.success && response.response) {
-            input = response.response;
-        } else {
-            throw new Error(response.error || 'Failed to generate random prompt');
-        }
-    }
-    const payload = MP.RequestBuilder.createRequestPayload(
-      input,
-      null,
-      'enhance-prompt'
-    );
-    const response = await MP.APIClient.makeRequest(payload);
-    if (response.success && response.response) {
-      promptTextArea.value = response.response;
-      triggerChangeFor(promptTextArea);
-      promptTextArea.focus();
-      promptTextArea.setSelectionRange(0, promptTextArea.value.length);
-    } else {
-      throw new Error(response.error || 'Failed to enhance prompt');
-    }
-  } catch (error) {
-    console.error('Prompt enhancement error:', error);
-    showError(error.message);
-  } finally {
-    window.isEnhancing = false;
-    // Hide loading animation
-    if (loadingAnimation) loadingAnimation.classList.remove('active');
-  }
-}
-
-/**
- * Handles the magic vision button click
- * Analyzes the current image and generates a prompt based on it
- * @returns {void}
- * @throws {Error} If no image is selected or if the analysis fails
- * */
-async function handleVisionAnalysis() {
-    const currentImage = document.querySelector('#current_image img.current-image-img');
-    if (!currentImage?.src) {
-        showError('No image selected');
-        return;
-    }
-    const loadingAnimation = document.getElementById('prompt_loading_animation');
-    try {
-        // Show loading animation
-        if (loadingAnimation) loadingAnimation.classList.add('active');
-        // Fetch the image data and convert to base64
-        const fetchResponse = await fetch(currentImage.src);
-        const blob = await fetchResponse.blob();
-        // Convert blob to base64
-        const reader = new FileReader();
-        const base64Data = await new Promise((resolve) => {
-            reader.onloadend = () => {
-                // Get just the base64 data without the data URL prefix
-                resolve(reader.result.split(',')[1]);
-            };
-            reader.readAsDataURL(blob);
-        });
-        // Get instruction for magic-vision feature
-        const payload = MP.RequestBuilder.createRequestPayload(
-            getInstructionContent(getInstructionForFeature('magic-vision') || 'caption'),
-            base64Data,
-            'magic-vision'
-        );
-        const response = await MP.APIClient.makeRequest(payload);
-        if (response.success && response.response) {
-            const promptBox = document.getElementById('alt_prompt_textbox');
-            if (promptBox) {
-                promptBox.value = response.response;
-                triggerChangeFor(promptBox);
-                promptBox.focus();
-                promptBox.setSelectionRange(0, promptBox.value.length);
-            }
-        } else {
-            throw new Error(response.error || 'Failed to analyze image');
-        }
-    } catch (error) {
-        console.error('Vision analysis error:', error);
-        showError(`Failed to analyze image. Have you selected a vision model in settings? Error: ${error.message}`);
-    } finally {
-        // Hide loading animation
-        if (loadingAnimation) loadingAnimation.classList.remove('active');
-    }
-}
-
-/**
  * Adds a "MagicPrompt Settings" link into the Magic Prompt group in the
  * Generate tab's left sidebar (alongside the extension's other parameter
  * fields). Clicking it opens the same settings modal as the gear button in
@@ -452,160 +343,6 @@ function addSidebarSettingsLink() {
         postParamBuildSteps.push(build);
     }
     build();
-}
-
-/**
- * Adds the prompt buttons to the Generate tab with a mini-settings panel
- * @returns {void}
- */
-function addPromptButtons() {
-    const altPromptRegion = document.querySelector('.alt_prompt_region');
-    if (!altPromptRegion) return;
-    // Create container
-    const container = document.createElement('div');
-    container.className = 'magicprompt prompt-buttons-container';
-    // Create loading animation
-    const loadingAnimation = document.createElement('div');
-    loadingAnimation.className = 'magicprompt prompt-loading';
-    loadingAnimation.id = 'prompt_loading_animation';
-    for (let i = 0; i < 3; i++) {
-        const dot = document.createElement('div');
-        dot.className = 'dot';
-        loadingAnimation.appendChild(dot);
-    }
-    // Create enhance button
-    const enhanceButton = document.createElement('button');
-    enhanceButton.className = 'magicprompt prompt-button';
-    enhanceButton.innerHTML = '🪄 Enhance Prompt';
-    enhanceButton.addEventListener('click', handleEnhancePrompt);
-    // Create vision button
-    const visionButton = document.createElement('button');
-    visionButton.className = 'magicprompt prompt-button';
-    visionButton.innerHTML = '👀 Magic Vision';
-    visionButton.addEventListener('click', handleVisionAnalysis);
-    // Create settings button
-    const settingsButton = document.createElement('button');
-    settingsButton.className = 'magicprompt prompt-settings-button';
-    settingsButton.innerHTML = '⚙️';
-    settingsButton.title = 'Feature Settings';
-    // Create settings panel
-    const settingsPanel = document.createElement('div');
-    settingsPanel.className = 'magicprompt prompt-settings-panel';
-    settingsPanel.style.display = 'none';
-    document.body.appendChild(settingsPanel);
-    // Build settings panel content
-    settingsPanel.innerHTML = `
-        <div class="settings-panel-header">
-            <h3>Feature Settings</h3>
-            <button class="panel-close-btn">×</button>
-        </div>
-        <div class="settings-panel-body">
-            <div class="feature-setting">
-                <label for="enhance-prompt-select">Enhance Prompt Instruction:</label>
-                <select id="enhance-prompt-select" class="feature-select"></select>
-                <div class="setting-description">Choose which instruction set to use when enhancing prompts</div>
-            </div>
-            <div class="feature-setting">
-                <label for="magic-vision-select">Magic Vision Instruction:</label>
-                <select id="magic-vision-select" class="feature-select"></select>
-                <div class="setting-description">Choose which instruction set to use for image analysis</div>
-            </div>
-        </div>
-    `;
-
-    // Function to position the panel
-    function positionSettingsPanel() {
-        const buttonRect = settingsButton.getBoundingClientRect();
-        settingsPanel.style.position = 'fixed';
-        settingsPanel.style.top = (buttonRect.bottom + 10) + 'px';
-        settingsPanel.style.right = (window.innerWidth - buttonRect.right) + 'px';
-        settingsPanel.style.zIndex = '10000';
-    }
-
-    // Function to populate the feature selects
-    function populateFeatureSelects() {
-        const enhanceSelect = settingsPanel.querySelector('#enhance-prompt-select');
-        const visionSelect = settingsPanel.querySelector('#magic-vision-select');
-        if (enhanceSelect && typeof getInstructionsForCategory === 'function') {
-            enhanceSelect.innerHTML = '';
-            const enhanceInstructions = getInstructionsForCategory('prompt');
-            enhanceInstructions.forEach(instruction => {
-                const option = document.createElement('option');
-                option.value = instruction.id;
-                option.textContent = instruction.title;
-                enhanceSelect.appendChild(option);
-            });
-            const currentEnhanceMapping = getInstructionForFeature('enhance-prompt');
-            if (currentEnhanceMapping && enhanceSelect.querySelector(`option[value="${currentEnhanceMapping}"]`)) {
-                enhanceSelect.value = currentEnhanceMapping;
-            }
-        }
-        if (visionSelect && typeof getInstructionsForCategory === 'function') {
-            visionSelect.innerHTML = '';
-            const visionInstructions = getInstructionsForCategory('vision');
-            visionInstructions.forEach(instruction => {
-                const option = document.createElement('option');
-                option.value = instruction.id;
-                option.textContent = instruction.title;
-                visionSelect.appendChild(option);
-            });
-            const currentVisionMapping = getInstructionForFeature('magic-vision');
-            if (currentVisionMapping && visionSelect.querySelector(`option[value="${currentVisionMapping}"]`)) {
-                visionSelect.value = currentVisionMapping;
-            }
-        }
-    }
-
-    // Add change handlers to the selects
-    function addSelectHandlers() {
-        const enhanceSelect = settingsPanel.querySelector('#enhance-prompt-select');
-        const visionSelect = settingsPanel.querySelector('#magic-vision-select');
-        if (enhanceSelect && typeof setInstructionForFeature === 'function') {
-            enhanceSelect.addEventListener('change', function () {
-                setInstructionForFeature('enhance-prompt', this.value);
-            });
-        }
-        if (visionSelect && typeof setInstructionForFeature === 'function') {
-            visionSelect.addEventListener('change', function () {
-                setInstructionForFeature('magic-vision', this.value);
-            });
-        }
-    }
-    // Toggle settings panel when clicking settings button
-    settingsButton.addEventListener('click', function (e) {
-        e.stopPropagation();
-        const isVisible = settingsPanel.style.display === 'block';
-        if (isVisible) {
-            settingsPanel.style.display = 'none';
-            return;
-        }
-        populateFeatureSelects();
-        addSelectHandlers();
-        positionSettingsPanel();
-        settingsPanel.style.display = 'block';
-    });
-    // Close panel when clicking the close button
-    const closeBtn = settingsPanel.querySelector('.panel-close-btn');
-    if (closeBtn) {
-        closeBtn.addEventListener('click', function () {
-            settingsPanel.style.display = 'none';
-        });
-    }
-    // Close panel when clicking outside
-    document.addEventListener('click', function (e) {
-        if (settingsPanel.style.display === 'block' &&
-            !settingsPanel.contains(e.target) &&
-            !settingsButton.contains(e.target)) {
-            settingsPanel.style.display = 'none';
-        }
-    });
-    // Add elements to container
-    container.appendChild(loadingAnimation);
-    container.appendChild(enhanceButton);
-    container.appendChild(visionButton);
-    container.appendChild(settingsButton);
-    // Insert container into the alt prompt region
-    altPromptRegion.insertBefore(container, altPromptRegion.firstChild);
 }
 
 function wildcardSeedGenerator() {
@@ -680,6 +417,51 @@ function magicPromptRefineImage(src) {
 
 registerMediaButton('Refine Img', magicPromptRefineImage, 'Refines this image using its finalized prompt', ['image'], true, true);
 
+/** Display the captured MP Prompt before Negative Prompt, keeping other variables in place. */
+if (typeof getFormattedMetadataEntries === 'function') {
+    const originalGetFormattedMetadataEntries = getFormattedMetadataEntries;
+    getFormattedMetadataEntries = function (metadata) {
+        const formatted = originalGetFormattedMetadataEntries(metadata);
+        const entries = formatted.entries;
+        const variablesIndex = entries.findIndex(entry => entry.id === 'mp_variables');
+        if (variablesIndex < 0) {
+            return formatted;
+        }
+        let variables;
+        try {
+            variables = JSON.parse(entries[variablesIndex].compareValue);
+        }
+        catch {
+            return formatted;
+        }
+        // Swarm displays the stored lowercase `prompt` key as "Prompt".
+        const promptKey = variables && Object.keys(variables).find(key => key.toLowerCase() === 'prompt');
+        if (!promptKey || typeof variables[promptKey] !== 'string' || !variables[promptKey]) {
+            return formatted;
+        }
+        const prompt = variables[promptKey];
+        delete variables[promptKey];
+        // Reuse Swarm's formatting for escaping, copy buttons, and nested variables.
+        const replacement = originalGetFormattedMetadataEntries(JSON.stringify({
+            sui_image_params: {},
+            sui_extra_data: {
+                'MP Prompt': prompt,
+                ...(Object.keys(variables).length > 0 ? { mp_variables: variables } : {})
+            }
+        })).entries;
+        const promptEntry = replacement.shift();
+        promptEntry.id = 'mp_variable_prompt';
+        promptEntry.breakAfter = true;
+        entries.splice(variablesIndex, 1, ...replacement);
+        let insertIndex = entries.findIndex(entry => entry.id === 'negativeprompt');
+        if (insertIndex < 0) {
+            insertIndex = entries.findLastIndex(entry => ['prompt', 'Original Prompt', 'Interpreted Prompt'].includes(entry.id)) + 1;
+        }
+        entries.splice(insertIndex, 0, promptEntry);
+        return formatted;
+    };
+}
+
 /**
  * Initializes on DOM load
  */
@@ -691,8 +473,6 @@ document.addEventListener("DOMContentLoaded", async function () {
         await loadSettings();
         // Populate instruction prefixes for autocomplete
         mpRefreshInstructionPrefixes();
-        // Add prompt buttons
-        addPromptButtons();
         // Add a Settings link into the Magic Prompt group in the left sidebar
         addSidebarSettingsLink();
         // Setup auto wildcard seed generation on Generate click (capture phase, before onclick)

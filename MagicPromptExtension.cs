@@ -58,7 +58,7 @@ public class MagicPromptExtension : Extension
 
         _paramUseCache = T2IParamTypes.Register<bool>(new T2IParamType(
             Name: "MP Use Cache",
-            Description: "Cache LLM results for static prompts to avoid repeated requests to LLM.",
+            Description: "Reuse cached LLM results for matching prompts across image seeds. When disabled, results are still cached, but only reused when the prompt, image seed, and LLM model all match.",
             Default: "true",
             Group: paramGroup,
             OrderPriority: 1
