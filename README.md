@@ -26,13 +26,13 @@ The MagicPrompt Extension provides a simple and intuitive way directly in SwarmU
 
 > [!WARNING]
 > Always back up your SwarmUI configuration before making changes.
-> To use 3rd party APIs, you must have an API key. You can get one from OpenAI, OpenRouter or Anthropic. These cost money to use per request but allow you to save precious VRAM.
+> To use 3rd party APIs, you must have an API key. You can get one from OpenAI or OpenRouter. These cost money to use per request but allow you to save precious VRAM.
 
 ## Features
 ------------
 
 * Generate and rewrite prompts for text-to-image models.
-* Supports various LLM backends including local Ollama, OpenAI-compatible APIs, OpenRouter, OpenAI, Anthropic, Grok (xAI), and Groq.
+* Supports various LLM backends including local Ollama, OpenAI-compatible APIs, OpenRouter, and OpenAI.
 * Provides an intuitive interface within SwarmUI, including a button in the Generate tab and a dedicated MagicPrompt tab.
 * Includes vision support, allowing you to upload images, generate captions, and use images as context for prompts.
 * Compatible with other SwarmUI extensions.
@@ -47,7 +47,7 @@ The extension now includes comprehensive vision support, allowing you to interac
     * **Vision Mode**: Ask questions about the image or request detailed analysis.
     * **Caption Mode**: Generate detailed captions for the uploaded image.
 * **Vision Actions**: A set of actions to perform on the uploaded image, including generating captions, using the image as an init image, sending the image to the prompt, and clearing the image.
-* **Backend Support**: Supports various vision backends, including Ollama, OpenRouter, OpenAI API, OpenAI (ChatGPT), and Anthropic (Claude).
+* **Backend Support**: Supports various vision backends, including Ollama, OpenRouter, OpenAI API, and OpenAI (ChatGPT).
 * **Settings**: Configure vision-specific settings separate from chat models such as selecting the backend and model, and setting API keys.
 
 ### Generate Tab Integration
@@ -69,7 +69,7 @@ The MagicPrompt Extension now integrates directly with SwarmUI's prompt parsing 
 * **Model Selection**: Choose different LLM models for each batch using the "MP Model ID" parameter.
 * **Instruction Selection**: Select custom instructions for each batch using the "MP Instructions" parameter.
 * **Prompt History**: A "📜 Prompt History" button in the Magic Prompt sidebar group opens a modal listing the last 100 unique prompts you generated with. Entries are the *raw* prompt exactly as you typed it — wildcards, variables and `<mpprompt:...>` tags are stored unexpanded, so any entry can be loaded back and re-run as-is. Uniqueness is checked on a trimmed, lowercased copy of the prompt, so re-running the same prompt just moves it back to the top instead of adding a duplicate. From the modal you can filter the list, load an entry into the prompt box (replacing or appending), copy it, delete a single entry, or clear the whole history. History is stored in your browser's localStorage, so it is per-browser and is lost if you clear site data.
-* **Thinking Level**: Control how much thinking/reasoning effort the LLM uses with the "MP Thinking" parameter (None/Low/Medium/High, default None). None disables thinking where the backend supports an off switch. Levels map per backend: OpenRouter reasoning effort, OpenAI/Grok `reasoning_effort`, Ollama `think` level, Anthropic thinking token budget. Levels only apply to reasoning-capable models; some backends reject unsupported levels with an error.
+* **Thinking Level**: Control how much thinking/reasoning effort the LLM uses with the "MP Thinking" parameter (None/Low/Medium/High, default None). None disables thinking where the backend supports an off switch. Levels map per backend: OpenRouter reasoning effort, OpenAI `reasoning_effort`, and Ollama `think` level. Levels only apply to reasoning-capable models; some backends reject unsupported levels with an error.
 
 ## Prerequisites
 ----------------
@@ -79,7 +79,7 @@ Before you install the MagicPrompt Extension, ensure that you have the following
 * You need to have SwarmUI installed on your system. If you don't have it installed, you can download it from [here](https://github.com/mcmonkeyprojects/SwarmUI).
 * Remove the HartsyCore Extension if you have it installed. It was removed to comply with the SwarmUI extension guidelines.
 * This extension assumes you have a working and setup local Ollama LLM API server or a compatable equilavent that uses OpenAi API format and you know the URL to make API calls. If you do not have this installed follow the instructions on their [GitHub](https://github.com/ollama/ollama).
-* Alternatively, you can use OpenAI or Anthropic LLM API servers. You will need an API key for these services.
+* Alternatively, you can use OpenAI or OpenRouter LLM API servers. You will need an API key for these services.
 
 ## Installation
 --------------
@@ -117,7 +117,7 @@ The MagicPrompt Extension can be used with any LLM model that works on the suppo
 ![Settings](Images/Screenshots/settings.PNG)
 
 **Chat Settings:**
-* **Chat Backend:** Choose your preferred LLM backend (e.g., Ollama, OpenAI, Anthropic).
+* **Chat Backend:** Choose your preferred LLM backend (e.g., Ollama, OpenAI, OpenRouter).
 * **Chat Model:** Choose the specific model you want to use.
 * **Base URL:** Enter the URL for your LLM API server (e.g., `http://localhost:11434` for local Ollama).
 
@@ -125,7 +125,7 @@ The MagicPrompt Extension can be used with any LLM model that works on the suppo
 > Chat and Vision settings are linked by default. If you would like to use different models for each, you can toggle this in settings.
 
 **Vision Settings:**
-* **Vision Backend:** Choose your preferred LLM vision backend (e.g., Ollama, OpenAI, Anthropic).
+* **Vision Backend:** Choose your preferred LLM vision backend (e.g., Ollama, OpenAI, OpenRouter).
 * **Vision Model:** Choose the specific vision model you want to use.
 * **Base URL:** Enter the base URL for your vision API if required.
 

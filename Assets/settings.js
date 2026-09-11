@@ -7,7 +7,7 @@
 'use strict';
 
 // Define backends that don't need base URL configuration
-const FIXED_URL_BACKENDS = ['openai', 'anthropic', 'openrouter', 'grok'];
+const FIXED_URL_BACKENDS = ['openai', 'openrouter'];
 
 // Define default feature to instruction mappings
 const DEFAULT_FEATURE_MAPPINGS = {
@@ -59,8 +59,6 @@ const CHAT_BACKEND_KEYS = [
   'openrouter',
   'openaiapi',
   'openai',
-  'anthropic',
-  'grok',
 ];
 
 /**
@@ -2666,8 +2664,6 @@ function initInstructionsUI() {
 function closeSettingsModal() {
   try {
     $('#settingsModal').modal('hide');
-    $('.modal-backdrop').remove();
-    $('body').removeClass('modal-open').css('padding-right', '');
   } catch (error) {
     console.error('Error closing settings modal:', error);
   }

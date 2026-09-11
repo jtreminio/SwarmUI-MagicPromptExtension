@@ -35,7 +35,7 @@ public class MagicPromptAPI
         API.RegisterAPICall(SessionSettings.ResetMagicPromptSettings, false, MagicPromptPermissions.PermResetConfig);
         API.RegisterAPICall(LLMAPICalls.GetMagicPromptModels, true, MagicPromptPermissions.PermGetModels);
         // All key types must be added to the accepted list first
-        string[] keyTypes = ["openai_api", "anthropic_api", "openrouter_api", "openaiapi_local", "grok_api"];
+        string[] keyTypes = ["openai_api", "openrouter_api", "openaiapi_local"];
         foreach (string keyType in keyTypes)
         {
             BasicAPIFeatures.AcceptedAPIKeyTypes.Add(keyType);
@@ -43,14 +43,10 @@ public class MagicPromptAPI
         // Register API Key tables for each backend
         RegisterApiKeyIfNeeded("openai_api", "openai", "OpenAI (ChatGPT)", "https://platform.openai.com/api-keys",
             new HtmlString("To use OpenAI models in SwarmUI (via Hartsy extensions), you must set your OpenAI API key."));
-        RegisterApiKeyIfNeeded("anthropic_api", "anthropic", "Anthropic (Claude)", "https://console.anthropic.com/settings/keys",
-            new HtmlString("To use Anthropic models like Claude in SwarmUI (via Hartsy extensions), you must set your Anthropic API key."));
         RegisterApiKeyIfNeeded("openrouter_api", "openrouter", "OpenRouter", "https://openrouter.ai/keys",
             new HtmlString("To use OpenRouter models in SwarmUI (via Hartsy extensions), you must set your OpenRouter API key. OpenRouter gives you access to many different models through a single API."));
         RegisterApiKeyIfNeeded("openaiapi_local", "openaiapi", "OpenAI API (Local)", "#",
             new HtmlString("For connecting to local servers that implement the OpenAI API schema (like LM Studio, text-generation-webui, or LocalAI). You may need to provide API keys or connection details depending on your local setup."));
-        RegisterApiKeyIfNeeded("grok_api", "grok", "Grok (x.ai)", "https://console.x.ai",
-            new HtmlString("To use Grok models from x.ai in SwarmUI (via Hartsy extensions), you must set your Grok API key."));
     }
 
     /// <summary>Safely registers an API key if it's not already registered</summary>
@@ -97,32 +93,6 @@ public class MagicPromptAPI
                     else
                     {
                         throw new InvalidOperationException("The response from OpenAI could not be processed (no choices found)");
-                    }
-                    break;
-                case "grok":
-                    // Grok chat responses follow OpenAI-compatible chat completions structure
-                    OpenAIResponse grokResponse = System.Text.Json.JsonSerializer.Deserialize<OpenAIResponse>(responseContent, jsonSerializerOptions);
-                    if (grokResponse?.Choices != null && grokResponse.Choices.Count > 0)
-                    {
-                        messageContent = grokResponse.Choices[0].Message.Content;
-                    }
-                    else
-                    {
-                        throw new InvalidOperationException("The response from Grok could not be processed (no choices found)");
-                    }
-                    break;
-                case "anthropic":
-                    AnthropicResponse anthropicResponse = System.Text.Json.JsonSerializer.Deserialize<AnthropicResponse>(responseContent, jsonSerializerOptions);
-                    if (anthropicResponse?.Content != null && anthropicResponse.Content.Length > 0)
-                    {
-                        // With extended thinking enabled, the first content block is a "thinking" block;
-                        // take the first "text" block instead of blindly using index 0.
-                        messageContent = anthropicResponse.Content.FirstOrDefault(c => c.Type == "text")?.Text
-                            ?? anthropicResponse.Content[0].Text;
-                    }
-                    else
-                    {
-                        throw new InvalidOperationException("The response from Anthropic could not be processed (no content found)");
                     }
                     break;
                 case "ollama":
@@ -291,41 +261,6 @@ public class MagicPromptAPI
                         Logs.Error("OpenAI models data array is null or empty.");
                         throw new InvalidOperationException("Failed to retrieve models from OpenAI. The response data was empty or invalid.");
                     }
-                case "grok":
-                    // Grok models endpoint follows OpenAI-style { data: [{id, ...}]} format
-                    OpenAIResponse grokModels = JsonConvert.DeserializeObject<OpenAIResponse>(responseContent);
-                    if (grokModels?.Data != null)
-                    {
-                        return [.. grokModels.Data.Select(
-                            x => new ModelData
-                            {
-                                Model = x.Id,
-                                Name = x.Id,
-                                Created = x.Created > 0 ? x.Created : null
-                            })];
-                    }
-                    else
-                    {
-                        Logs.Error("Grok models data array is null or empty.");
-                        throw new InvalidOperationException("Failed to retrieve models from Grok. The response data was empty or invalid.");
-                    }
-                case "anthropic":
-                    AnthropicResponse anthropicResponse = JsonConvert.DeserializeObject<AnthropicResponse>(responseContent);
-                    if (anthropicResponse?.Data != null)
-                    {
-                        return [.. anthropicResponse.Data.Select(x => new ModelData
-                        {
-                            Model = x.Id,
-                            Name = GetFriendlyNameFromId(x.Id),
-                            Version = ExtractVersionFromId(x.Id),
-                            Created = x.Created > 0 ? x.Created : null
-                        })];
-                    }
-                    else
-                    {
-                        Logs.Error("Anthropic models data array is null or empty.");
-                        throw new InvalidOperationException("Failed to retrieve models from Anthropic. The response data was empty or invalid.");
-                    }
                 case "openaiapi":
                     OpenAIAPIResponse openAIAPIResponse = JsonConvert.DeserializeObject<OpenAIAPIResponse>(responseContent);
                     if (openAIAPIResponse?.Data != null)
@@ -385,44 +320,6 @@ public class MagicPromptAPI
                 ErrorHandler.FormatErrorMessage(detectedErrorType, ex.Message, backend)
             );
         }
-    }
-
-    /// <summary>Extracts a version string from a model ID, if present</summary>
-    public static string ExtractVersionFromId(string id)
-    {
-        if (id.Length >= 8 && id[^8..].All(char.IsDigit))
-        {
-            return id[^8..];
-        }
-        return "";
-    }
-
-    /// <summary>Creates a user-friendly name from a model ID</summary>
-    public static string GetFriendlyNameFromId(string modelId)
-    {
-        // Extract the model name from ID patterns like "claude-3-opus-20240229"
-        string baseName = modelId.Split('/').Last();
-        // Remove version numbers and dates when possible
-        if (baseName.Length >= 8)
-        {
-            int dashPos = baseName.LastIndexOf('-', baseName.Length - 9);
-            int colonPos = baseName.LastIndexOf(':', baseName.Length - 9);
-            int sepPos = Math.Max(dashPos, colonPos);
-            if (sepPos >= 0 && baseName.Skip(sepPos + 1).Take(8).All(char.IsDigit))
-            {
-                baseName = baseName[..sepPos];
-            }
-        }
-        // Convert kebab-case to Title Case with proper spacing
-        string[] parts = baseName.Split('-');
-        for (int i = 0; i < parts.Length; i++)
-        {
-            if (parts[i].Length > 0)
-            {
-                parts[i] = char.ToUpper(parts[i][0]) + parts[i][1..];
-            }
-        }
-        return string.Join(" ", parts);
     }
 
     /// <summary>Creates a JSON object for a success, includes models and config data.</summary>

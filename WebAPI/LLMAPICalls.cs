@@ -174,8 +174,7 @@ public class LLMAPICalls : MagicPromptAPI
         {
             endpoint = backend.ToLower() switch
             {
-                "openrouter" or "openai" or "openaiapi" or "grok" => endpoints["chat"]?.ToString(),// OpenAI, Grok, and OpenRouter use the chat endpoint for vision
-                "anthropic" => endpoints["messages"]?.ToString() ?? endpoints["chat"]?.ToString(),// Anthropic uses the messages endpoint for both chat and vision
+                "openrouter" or "openai" or "openaiapi" => endpoints["chat"]?.ToString(),// OpenAI and OpenRouter use the chat endpoint for vision
                 "ollama" => endpoints["vision"]?.ToString() ?? endpoints["chat"]?.ToString(),// Ollama has a dedicated vision endpoint
                 _ => endpoints[endpointType]?.ToString() ?? endpoints["chat"]?.ToString(),
             };
@@ -183,11 +182,7 @@ public class LLMAPICalls : MagicPromptAPI
         // Special handling for models endpoints
         else if (endpointType == "models")
         {
-            endpoint = backend.ToLower() switch
-            {
-                "anthropic" => "/v1/models", // Anthropic has a standardized models endpoint now
-                _ => endpoints[endpointType]?.ToString()
-            };
+            endpoint = endpoints[endpointType]?.ToString();
         }
         else
         {
@@ -248,15 +243,6 @@ public class LLMAPICalls : MagicPromptAPI
                 }
                 request.Headers.Add("Authorization", $"Bearer {apiKey}");
                 break;
-            case "grok":
-                string grokKey = session?.User?.GetGenericData("grok_api", "key") ?? Program.Sessions.GenericSharedUser.GetGenericData("grok_api", "key");
-                if (string.IsNullOrEmpty(grokKey))
-                {
-                    error = ErrorHandler.FormatErrorMessage(ErrorType.Authentication, "Grok API Key not found", "grok");
-                    return false;
-                }
-                request.Headers.Add("Authorization", $"Bearer {grokKey}");
-                break;
             case "openrouter":
                 string openRouterKey = session?.User?.GetGenericData("openrouter_api", "key") ?? Program.Sessions.GenericSharedUser.GetGenericData("openrouter_api", "key");
                 if (string.IsNullOrEmpty(openRouterKey))
@@ -267,16 +253,6 @@ public class LLMAPICalls : MagicPromptAPI
                 request.Headers.Add("Authorization", $"Bearer {openRouterKey}");
                 request.Headers.Add("HTTP-Referer", "https://github.com/HartsyAI/SwarmUI-MagicPromptExtension");
                 request.Headers.Add("X-Title", "SwarmUI-MagicPromptExtension");
-                break;
-            case "anthropic":
-                string anthropicKey = session?.User?.GetGenericData("anthropic_api", "key") ?? Program.Sessions.GenericSharedUser.GetGenericData("anthropic_api", "key");
-                if (string.IsNullOrEmpty(anthropicKey))
-                {
-                    error = ErrorHandler.FormatErrorMessage(ErrorType.Authentication, "Anthropic API Key not found", "anthropic");
-                    return false;
-                }
-                request.Headers.Add("x-api-key", anthropicKey);
-                request.Headers.Add("anthropic-version", "2023-06-01");
                 break;
             case "openaiapi":
                 string openaiApiKey = session?.User?.GetGenericData("openaiapi_local", "key") ?? Program.Sessions.GenericSharedUser.GetGenericData("openaiapi_local", "key");
@@ -295,7 +271,7 @@ public class LLMAPICalls : MagicPromptAPI
             default:
                 // Handle unsupported backend
                 error = ErrorHandler.FormatErrorMessage(ErrorType.Generic,
-                    $"Unsupported LLM backend: {backend}. Please select one of the supported backends: Ollama, OpenAI, OpenRouter, or Anthropic.");
+                    $"Unsupported LLM backend: {backend}. Please select one of the supported backends: Ollama, OpenAI, OpenRouter, or OpenAI API (local).");
                 return false;
         }
         return true;
@@ -500,7 +476,7 @@ public class LLMAPICalls : MagicPromptAPI
             }
             catch (ArgumentException ex)
             {
-                // Typically thrown for validation issues (e.g., Grok vision requires direct JPG/PNG URLs)
+                // Typically thrown for request validation issues.
                 Logs.Error($"MagicPromptExtension.LLMAPICalls: Request build error for {backend}: {ex.Message}");
                 return CreateErrorResponse(ErrorHandler.FormatErrorMessage(ErrorType.UnsupportedParameterImage, ex.Message, backend));
             }

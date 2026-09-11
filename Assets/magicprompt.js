@@ -49,15 +49,6 @@ if (!window.MP) {
                     },
                     apikey: ''
                 },
-                anthropic: {
-                    baseurl: 'https://api.anthropic.com',
-                    timeout: 20,
-                    endpoints: {
-                        chat: 'v1/messages',
-                        models: 'v1/models'
-                    },
-                    apikey: ''
-                },
                 openrouter: {
                     baseurl: 'https://openrouter.ai',
                     timeout: 20,
@@ -73,16 +64,12 @@ if (!window.MP) {
                 openrouter: [],
                 openaiapi: [],
                 openai: [],
-                anthropic: [],
-                grok: [],
             },
             favoritedModels: {
                 ollama: [],
                 openrouter: [],
                 openaiapi: [],
                 openai: [],
-                anthropic: [],
-                grok: [],
             },
             // Instructions
             instructions: {
@@ -490,7 +477,7 @@ document.addEventListener("DOMContentLoaded", async function () {
         });
         // Initialize modal
         $('#settingsModal').modal({
-            backdrop: 'static', keyboard: false, show: false
+            backdrop: true, keyboard: true, show: false
         }).on('show.bs.modal', initSettingsModal);
         // Initialize models
         await fetchModels();

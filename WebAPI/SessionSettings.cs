@@ -17,9 +17,7 @@ public class SessionSettings : MagicPromptAPI
         "ollama",
         "openrouter",
         "openaiapi",
-        "openai",
-        "anthropic",
-        "grok"
+        "openai"
     ];
 
     /// <summary>Loads <c>blockedModels</c>: each known backend maps to distinct non-empty model id strings.</summary>
@@ -174,16 +172,6 @@ public class SessionSettings : MagicPromptAPI
                 ["models"] = "v1/models"
             }
         },
-        ["anthropic"] = new JObject
-        {
-            ["baseurl"] = "https://api.anthropic.com",
-            ["timeout"] = 20,
-            ["endpoints"] = new JObject
-            {
-                ["chat"] = "v1/messages",
-                ["models"] = "v1/models"
-            }
-        },
         ["openrouter"] = new JObject
         {
             ["baseurl"] = "https://openrouter.ai",
@@ -192,16 +180,6 @@ public class SessionSettings : MagicPromptAPI
             {
                 ["chat"] = "/api/v1/chat/completions",
                 ["models"] = "/api/v1/models"
-            }
-        },
-        ["grok"] = new JObject
-        {
-            ["baseurl"] = "https://api.x.ai",
-            ["timeout"] = 20,
-            ["endpoints"] = new JObject
-            {
-                ["chat"] = "/v1/chat/completions",
-                ["models"] = "/v1/models"
             }
         }
     };
@@ -227,20 +205,40 @@ public class SessionSettings : MagicPromptAPI
             ["ollama"] = new JArray(),
             ["openrouter"] = new JArray(),
             ["openaiapi"] = new JArray(),
-            ["openai"] = new JArray(),
-            ["anthropic"] = new JArray(),
-            ["grok"] = new JArray()
+            ["openai"] = new JArray()
         },
         ["favoritedModels"] = new JObject
         {
             ["ollama"] = new JArray(),
             ["openrouter"] = new JArray(),
             ["openaiapi"] = new JArray(),
-            ["openai"] = new JArray(),
-            ["anthropic"] = new JArray(),
-            ["grok"] = new JArray()
+            ["openai"] = new JArray()
         }
     };
+
+    /// <summary>Removes retired providers and safely falls back from old saved selections.</summary>
+    private static void RemoveUnsupportedBackends(JObject settings)
+    {
+        foreach (string selectionKey in new[] { "backend", "visionbackend" })
+        {
+            string selected = settings[selectionKey]?.ToString()?.ToLowerInvariant();
+            if (string.IsNullOrEmpty(selected) || !DefaultBackendConfig.ContainsKey(selected))
+            {
+                settings[selectionKey] = "ollama";
+            }
+        }
+
+        if (settings["backends"] is JObject backends)
+        {
+            foreach (JProperty backend in backends.Properties().ToList())
+            {
+                if (!DefaultBackendConfig.ContainsKey(backend.Name))
+                {
+                    backends.Remove(backend.Name);
+                }
+            }
+        }
+    }
 
     public static async Task<JObject> GetMagicPromptSettings()
     {
@@ -282,6 +280,7 @@ public class SessionSettings : MagicPromptAPI
                 }
                 settings["backends"] = backendsConfig;
             }
+            RemoveUnsupportedBackends(settings);
             NormalizeBlockedModels(settings);
             NormalizeFavoritedModels(settings);
             EnforceBlockFavoriteExclusivity(settings);
@@ -398,6 +397,7 @@ public class SessionSettings : MagicPromptAPI
             newSettings = existingSettings["settings"] as JObject ?? [];
             // Merge in new settings
             MergeSettings(newSettings, settings["settings"] as JObject);
+            RemoveUnsupportedBackends(newSettings);
             if (newSettings["baseurl"] != null)
             {
                 string backend = newSettings["backend"]?.ToString();
@@ -412,9 +412,7 @@ public class SessionSettings : MagicPromptAPI
             }
             // Fixed backend URLs should never change
             newSettings["backends"]["openai"]["baseurl"] = "https://api.openai.com";
-            newSettings["backends"]["anthropic"]["baseurl"] = "https://api.anthropic.com";
             newSettings["backends"]["openrouter"]["baseurl"] = "https://openrouter.ai";
-            newSettings["backends"]["grok"]["baseurl"] = "https://api.x.ai";
 
             NormalizeBlockedModels(newSettings);
             NormalizeFavoritedModels(newSettings);

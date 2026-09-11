@@ -138,7 +138,7 @@
     </template>
 
     <!-- Modal Structure -->
-    <div class="modal fade magicprompt" id="settingsModal" tabindex="-1" aria-labelledby="settingsModalLabel" aria-hidden="true">
+    <div class="modal fade magicprompt" id="settingsModal" tabindex="-1" aria-labelledby="settingsModalLabel" aria-hidden="true" data-bs-backdrop="true" data-bs-keyboard="true">
         <div class="modal-dialog modal-dialog-centered modal-lg">
             <div class="modal-content">
                 <div class="modal-header">
@@ -175,10 +175,6 @@
                                             <label class="btn btn-outline-primary" for="openaiAPILLMBtn">OpenAIAPI (local)</label>
                                             <input type="radio" class="btn-check" name="llmBackend" id="openaiLLMBtn" autocomplete="off">
                                             <label class="btn btn-outline-primary" for="openaiLLMBtn">OpenAI (ChatGPT)</label>
-                                            <input type="radio" class="btn-check" name="llmBackend" id="anthropicLLMBtn" autocomplete="off">
-                                            <label class="btn btn-outline-primary" for="anthropicLLMBtn">Anthropic (Claude)</label>
-                                            <input type="radio" class="btn-check" name="llmBackend" id="grokLLMBtn" autocomplete="off">
-                                            <label class="btn btn-outline-primary" for="grokLLMBtn">Grok (xAI)</label>
                                         </div>
                                     </div>
                                     <div class="d-flex gap-3">
@@ -271,10 +267,6 @@
                                             <label class="btn btn-outline-primary" for="openaiAPIVisionBtn">OpenAIAPI (local)</label>
                                             <input type="radio" class="btn-check" name="visionBackendSelect" id="openaiVisionBtn" autocomplete="off">
                                             <label class="btn btn-outline-primary" for="openaiVisionBtn">OpenAI (ChatGPT)</label>
-                                            <input type="radio" class="btn-check" name="visionBackendSelect" id="anthropicVisionBtn" autocomplete="off">
-                                            <label class="btn btn-outline-primary" for="anthropicVisionBtn">Anthropic (Claude)</label>
-                                            <input type="radio" class="btn-check" name="visionBackendSelect" id="grokVisionBtn" autocomplete="off">
-                                            <label class="btn btn-outline-primary" for="grokVisionBtn">Grok (xAI)</label>
                                         </div>
                                     </div>
                                     <div class="d-flex gap-3">

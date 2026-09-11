@@ -32,7 +32,7 @@ public static class BackendSchema
     }
 
     /// <summary>Get the schema type for the backend.</summary>
-    /// <param name="type">Backend type (ollama, openai, anthropic, etc.)</param>
+    /// <param name="type">Backend type (ollama, openai, openaiapi, or openrouter)</param>
     /// <param name="content">Message content including text and media</param>
     /// <param name="model">Model name to use</param>
     /// <param name="messageType">Type of message (Text or Vision)</param>
@@ -50,10 +50,8 @@ public static class BackendSchema
         return type switch
         {
             "ollama" => OllamaRequestBody(content, model, messageType, thinking),
-            "grok" => OpenAICompatibleRequestBody(content, model, messageType, preferPngForBase64: true, isOpenRouter: false, thinking),
             "openai" or "openaiapi" => OpenAICompatibleRequestBody(content, model, messageType, preferPngForBase64: false, isOpenRouter: false, thinking),
             "openrouter" => OpenAICompatibleRequestBody(content, model, messageType, preferPngForBase64: false, isOpenRouter: true, thinking),
-            "anthropic" => AnthropicRequestBody(content, model, messageType, thinking),
             _ => throw new ArgumentException($"Unsupported backend type: {type}")
         };
     }
@@ -234,69 +232,8 @@ public static class BackendSchema
         }
         else if (thinking != "none")
         {
-            // OpenAI/Grok effort switch; non-reasoning models reject it with a clear error.
+            // OpenAI effort switch; non-reasoning models reject it with a clear error.
             body["reasoning_effort"] = thinking;
-        }
-        return body;
-    }
-
-    /// <summary>Generates a request body for the Anthropic (Claude) API.</summary>
-    private static object AnthropicRequestBody(MessageContent content, string model, MessageType messageType, string thinking = "none")
-    {
-        List<object> messages = [];
-        if (messageType == MessageType.Vision && content.Media?.Any() == true)
-        {
-            List<object> messageContent = [];
-            foreach (MediaContent media in content.Media)
-            {
-                // Compress image and convert to PNG. Anthropic only accepts PNG.
-                string imageData = CompressImageForVision(media, "PNG");
-                string mediaType = "image/png";
-                messageContent.Add(new
-                {
-                    type = "image",
-                    source = new
-                    {
-                        type = "base64",
-                        media_type = mediaType,
-                        data = imageData
-                    }
-                });
-            }
-            messageContent.Add(new
-            {
-                type = "text",
-                text = content.Text
-            });
-            messages.Add(new
-            {
-                role = "user",
-                content = messageContent.ToArray()
-            });
-        }
-        else
-        {
-            messages.Add(new { role = "user", content = content.Text });
-        }
-
-        Dictionary<string, object> body = new()
-        {
-            ["model"] = model,
-            ["messages"] = messages.ToArray(),
-            ["system"] = content.Instructions,
-            ["max_tokens"] = 1024
-        };
-        if (thinking != "none")
-        {
-            // Anthropic requires budget_tokens >= 1024 and max_tokens > budget_tokens.
-            int budget = thinking switch
-            {
-                "low" => 1024,
-                "medium" => 2048,
-                _ => 4096
-            };
-            body["max_tokens"] = budget + 1024;
-            body["thinking"] = new { type = "enabled", budget_tokens = budget };
         }
         return body;
     }

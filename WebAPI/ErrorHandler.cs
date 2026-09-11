@@ -94,12 +94,6 @@ public static class ErrorHandler
         return _instance.TryParseOllamaError(responseContent, statusCode, out errorType, out errorMessage);
     }
 
-    /// <summary>Try to parse Anthropic error response</summary>
-    public static bool TryParseAnthropicError(string responseContent, HttpStatusCode statusCode, out ErrorType errorType, out string errorMessage)
-    {
-        return _instance.TryParseAnthropicError(responseContent, statusCode, out errorType, out errorMessage);
-    }
-
     /// <summary>Detect error type from raw response content and HTTP status code</summary>
     public static string DetectErrorType(string responseContent, HttpStatusCode statusCode, string provider = null)
     {
@@ -401,38 +395,6 @@ public class ErrorHandlerImplementation : IErrorHandler
                     ]
                 )
             },
-            ["grok"] = new Dictionary<ErrorType, ErrorTemplateObject>
-            {
-                [ErrorType.Authentication] = new ErrorTemplateObject(
-                    "Grok API Key Error",
-                    "Failed to authenticate with the Grok (xAI) API.",
-                    [
-                        "Missing or invalid API key",
-                        "Your Grok API key may have expired",
-                        "Your xAI account may have billing or access issues"
-                    ],
-                    [
-                        "Go to the Users tab in SwarmUI",
-                        "Click on the Settings icon for your user",
-                        "Enter or update your Grok API key",
-                        "Manage keys at https://x.ai/",
-                        "Verify you have access to the selected model"
-                    ]
-                ),
-                [ErrorType.Quota] = new ErrorTemplateObject(
-                    "Grok Usage Limit Reached",
-                    "Your Grok/xAI account has reached its usage limit.",
-                    [
-                        "You've used all included credits",
-                        "You've reached your spending cap or rate limit"
-                    ],
-                    [
-                        "Wait and try again later",
-                        "Review your usage and limits at https://x.ai/",
-                        "Consider adjusting your plan or using a different model"
-                    ]
-                )
-            },
             ["ollama"] = new Dictionary<ErrorType, ErrorTemplateObject>
             {
                 [ErrorType.ServerError] = new ErrorTemplateObject(
@@ -474,36 +436,6 @@ public class ErrorHandlerImplementation : IErrorHandler
                         "Verify the Ollama URL in MagicPrompt settings (default: http://localhost:11434)",
                         "Restart the Ollama service",
                         "Check if any other application is using the same port"
-                    ]
-                )
-            },
-            ["anthropic"] = new Dictionary<ErrorType, ErrorTemplateObject>
-            {
-                [ErrorType.TokenLimit] = new ErrorTemplateObject(
-                    "Claude Token Limit Exceeded",
-                    "Your request exceeded Claude's token limit.",
-                    [],
-                    [
-                        "Using Claude-3 Opus or another model with a larger context window",
-                        "Shortening your prompt",
-                        "Reducing the number or size of attached images",
-                        "Breaking your request into smaller chunks"
-                    ]
-                ),
-                [ErrorType.Authentication] = new ErrorTemplateObject(
-                    "Anthropic API Key Error",
-                    "Failed to authenticate with the Anthropic API.",
-                    [
-                        "Missing or invalid API key",
-                        "Your Anthropic API key may have expired",
-                        "Your Anthropic account may have issues"
-                    ],
-                    [
-                        "Go to the Users tab in SwarmUI",
-                        "Click on the Settings icon for your user",
-                        "Enter or update your Anthropic API key",
-                        "Verify your API key at https://console.anthropic.com/settings/keys",
-                        "Check your Anthropic account status"
                     ]
                 )
             },
@@ -754,54 +686,6 @@ public class ErrorHandlerImplementation : IErrorHandler
         return false;
     }
 
-    /// <summary>Try to parse Anthropic error response</summary>
-    public bool TryParseAnthropicError(string responseContent, HttpStatusCode statusCode, out ErrorType errorType, out string errorMessage)
-    {
-        errorType = ErrorType.Generic;
-        errorMessage = string.Empty;
-        if (string.IsNullOrEmpty(responseContent))
-        {
-            return false;
-        }
-        try
-        {
-            dynamic jsonResponse = JsonConvert.DeserializeObject<dynamic>(responseContent);
-            if (jsonResponse == null)
-            {
-                return false;
-            }
-            // Check if it's an error response by looking for the right structure
-            if (jsonResponse.type == null || jsonResponse.type.ToString() != "error" ||
-                jsonResponse.error == null || jsonResponse.error.type == null)
-            {
-                return false;
-            }
-            string errorTypeStr = jsonResponse.error.type.ToString();
-            errorMessage = jsonResponse.error.message != null ?
-                jsonResponse.error.message.ToString() : "Unknown Anthropic error";
-            // Map Anthropic error types directly
-            errorType = errorTypeStr switch
-            {
-                "authentication_error" => ErrorType.Authentication,
-                "permission_error" => ErrorType.Authentication,
-                "not_found_error" => statusCode == HttpStatusCode.NotFound ?
-                    ErrorType.ModelNotFound : ErrorType.Generic,
-                "rate_limit_error" => ErrorType.Quota,
-                "api_error" => ErrorType.ServerError,
-                "overloaded_error" => ErrorType.ServerError,
-                "request_too_large" => ErrorType.TokenLimit,
-                _ => MapStatusCodeToErrorType(statusCode, "anthropic")
-            };
-            Logs.Error($"Anthropic error ({errorTypeStr}): {errorMessage}");
-            return true;
-        }
-        catch (Exception ex)
-        {
-            Logs.Error($"Error parsing Anthropic error response: {ex.Message}");
-        }
-        return false;
-    }
-
     /// <summary>Attempts to parse Ollama-specific error responses</summary>
     public bool TryParseOllamaError(string responseContent, HttpStatusCode statusCode, out ErrorType errorType, out string errorMessage)
     {
@@ -886,9 +770,7 @@ public class ErrorHandlerImplementation : IErrorHandler
         return normalizedProvider switch
         {
             "openai" or "openaiapi" => TryParseOpenAIError(responseContent, statusCode, out errorType, out errorMessage),
-            "grok" => TryParseOpenAIError(responseContent, statusCode, out errorType, out errorMessage),
             "openrouter" => TryParseOpenRouterError(responseContent, statusCode, out errorType, out errorMessage),
-            "anthropic" => TryParseAnthropicError(responseContent, statusCode, out errorType, out errorMessage),
             "ollama" => TryParseOllamaError(responseContent, statusCode, out errorType, out errorMessage),
             _ => false,
         };
@@ -946,7 +828,6 @@ public class ErrorHandlerImplementation : IErrorHandler
         return backend switch
         {
             "openaiapi" or "openai-api" => "openai",
-            "anthropicapi" or "anthropic-api" => "anthropic",
             _ => backend
         };
     }

@@ -108,7 +108,7 @@ public class MagicPromptExtension : Extension
 
         _paramThinking = T2IParamTypes.Register<string>(new T2IParamType(
             Name: "MP Thinking",
-            Description: "How much thinking/reasoning effort the LLM uses before responding. 'None' disables thinking where the backend supports an off switch. Mapping per backend: OpenRouter reasoning effort, OpenAI/Grok reasoning_effort, Ollama think level, Anthropic thinking budget. Levels only work on reasoning-capable models; some backends reject unsupported levels.",
+            Description: "How much thinking/reasoning effort the LLM uses before responding. 'None' disables thinking where the backend supports an off switch. Mapping per backend: OpenRouter reasoning effort, OpenAI reasoning_effort, and Ollama think level. Levels only work on reasoning-capable models; some backends reject unsupported levels.",
             Default: "none",
             IgnoreIf: "none",
             GetValues: _ => ["none///None", "low///Low", "medium///Medium", "high///High"],
