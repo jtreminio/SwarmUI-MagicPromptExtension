@@ -540,6 +540,36 @@ function mpRefreshInstructionPrefixes() {
 
 window.mpRefreshInstructionPrefixes = mpRefreshInstructionPrefixes;
 
+// Swarm's prefix completers run after the colon. Model selection happens inside
+// the brackets, so handle that slot before delegating to the standard completion.
+(function () {
+    const originalGetPossibleList = promptTabComplete.getPossibleList;
+    promptTabComplete.getPossibleList = function (box) {
+        const prompt = this.getPromptBeforeCursor(box);
+        const match = prompt.match(/<mpprompt\[([^\[\]<>,|]*),\s*([^\[\]<>,]*)$/i);
+        if (!match) {
+            return originalGetPossibleList.call(this, box);
+        }
+
+        const select = document.getElementById('input_mpmodelid');
+        const query = match[2].trim().toLowerCase();
+        const tagStart = match[0].slice(0, match[0].length - match[2].length);
+        const afterCursor = getTextContent(box).substring(getTextSelRange(box)[0]);
+        // Keep an existing bracket or output flag when completing inside a tag.
+        const ending = /^\s*[,\]]/.test(afterCursor) ? '' : ']:';
+
+        return Array.from(select?.options || [])
+            .filter(option => option.value && option.value !== 'loading' && !option.disabled)
+            .filter(option => option.value.toLowerCase().includes(query) || option.text.toLowerCase().includes(query))
+            .map(option => ({
+                raw: true,
+                name: `${tagStart}${option.value}${ending}`,
+                clean: option.text,
+                desc: option.value
+            }));
+    };
+})();
+
 promptTabComplete.registerPrefix('mpprompt', 'Prompt to be sent to LLM', (prefix) => {
     return [];
 }, false);

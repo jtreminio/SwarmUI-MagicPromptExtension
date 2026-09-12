@@ -10,7 +10,7 @@ namespace Hartsy.Extensions.MagicPromptExtension;
 public class PromptHandler
 {
     // Matches <mpprompt:...> and <mpprompt[InstructionName]:...>
-    // Group 1 = instruction identifier (optional, may include a trailing ", false" flag), Group 2 = prompt content (handles nested tags)
+    // Group 1 = optional comma-separated pre-data, Group 2 = prompt content (handles nested tags)
     private static readonly Regex MppromptRegex = new(@"<mpprompt(?:\[([^\]]+)\])?:((?:[^<>]|<[^>]*>)+)>", RegexOptions.Compiled);
     private static readonly Regex MpresponseRegex = new(@"<mpresponse:(\d+)>", RegexOptions.Compiled);
     private readonly PromptCache _cache;
@@ -193,16 +193,17 @@ public class PromptHandler
 
     /// <summary>
     /// Parses the optional mpprompt pre-data (the [...] section).
-    /// Grammar: [instruction][|model][,false]
-    /// - The optional "|model" part selects the LLM for this tag. A model of "random" picks a random non-blocked model.
-    /// - A trailing ", false" flag (or a bare "false" in the instruction slot) suppresses printing the LLM response
-    ///   while still recording it for &lt;mpresponse:N&gt;.
+    /// Grammar: [instruction, model, printResponse]
+    /// - The optional model can also be specified after the instruction with "|" for compatibility.
+    /// - Any parameter whose value is "false" suppresses printing the LLM response while still recording it for
+    ///   &lt;mpresponse:N&gt;. This allows the flag to be the first, second, or third parameter.
     /// Examples:
-    /// - [Action]              => instruction "Action", default model, print
-    /// - [Action|gpt-4o]       => instruction "Action", model "gpt-4o", print
-    /// - [|random]             => default instruction, random model, print
-    /// - [Action|gpt-4o,false] => instruction "Action", model "gpt-4o", don't print
-    /// - [false]               => default instruction, default model, don't print
+    /// - [Action]                 => instruction "Action", default model, print
+    /// - [Action, gpt-4o]         => instruction "Action", model "gpt-4o", print
+    /// - [Action|gpt-4o]          => instruction "Action", model "gpt-4o", print
+    /// - [|random]                => default instruction, random model, print
+    /// - [Action, gpt-4o, false]  => instruction "Action", model "gpt-4o", don't print
+    /// - [false]                  => default instruction, default model, don't print
     /// </summary>
     private static void ParsePreData(string raw, out string instructionId, out string modelSpec, out bool printResponse)
     {
@@ -215,38 +216,53 @@ public class PromptHandler
             return;
         }
 
-        var trimmed = raw.Trim();
+        var parameters = raw.Split(',', StringSplitOptions.None)
+            .Select(parameter => parameter.Trim())
+            .ToArray();
 
-        // Strip an optional trailing ", false" print-suppression flag.
-        int commaIndex = trimmed.LastIndexOf(',');
-        if (commaIndex >= 0 && trimmed[(commaIndex + 1)..].Trim().Equals("false", StringComparison.OrdinalIgnoreCase))
+        // The output flag may occupy any of the supported parameter positions. Remove it from the
+        // instruction/model values so it can never be sent to the instruction resolver or model selector.
+        if (parameters.Any(IsFalseParameter))
         {
             printResponse = false;
-            trimmed = trimmed[..commaIndex].Trim();
         }
 
-        // Split instruction from model on the first '|'.
-        int pipeIndex = trimmed.IndexOf('|');
-        string instructionPart;
+        var instructionPart = parameters.Length > 0 && !IsFalseParameter(parameters[0])
+            ? parameters[0]
+            : null;
+        var modelPart = parameters.Length > 1 && !IsFalseParameter(parameters[1])
+            ? parameters[1]
+            : null;
+
+        // Split instruction from model on the first '|'. This remains supported for existing prompts.
+        int pipeIndex = instructionPart?.IndexOf('|') ?? -1;
         if (pipeIndex >= 0)
         {
-            instructionPart = trimmed[..pipeIndex].Trim();
-            var modelPart = trimmed[(pipeIndex + 1)..].Trim();
-            modelSpec = string.IsNullOrWhiteSpace(modelPart) ? null : modelPart;
-        }
-        else
-        {
-            instructionPart = trimmed;
-        }
+            var pipeModelPart = instructionPart[(pipeIndex + 1)..].Trim();
+            instructionPart = instructionPart[..pipeIndex].Trim();
 
-        // A bare "false" in the instruction slot is shorthand for print-suppression with the default instruction.
-        if (instructionPart.Equals("false", StringComparison.OrdinalIgnoreCase))
-        {
-            printResponse = false;
-            instructionPart = "";
+            if (IsFalseParameter(instructionPart))
+            {
+                printResponse = false;
+                instructionPart = null;
+            }
+
+            if (IsFalseParameter(pipeModelPart))
+            {
+                printResponse = false;
+                pipeModelPart = null;
+            }
+
+            modelPart = pipeModelPart;
         }
 
         instructionId = string.IsNullOrWhiteSpace(instructionPart) ? null : instructionPart;
+        modelSpec = string.IsNullOrWhiteSpace(modelPart) ? null : modelPart;
+    }
+
+    private static bool IsFalseParameter(string parameter)
+    {
+        return parameter.Equals("false", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
