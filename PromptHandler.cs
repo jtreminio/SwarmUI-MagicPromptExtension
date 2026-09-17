@@ -20,6 +20,7 @@ public class PromptHandler
     private readonly T2IRegisteredParam<string> _paramPostFilter;
     private readonly T2IRegisteredParam<string> _paramThinking;
     private readonly T2IRegisteredParam<string> _paramOnError;
+    private readonly T2IRegisteredParam<bool> _paramDisableLlmRequest;
 
     public const string OnErrorSkip = "skip";
     public const string OnErrorFallback = "fallback";
@@ -31,7 +32,8 @@ public class PromptHandler
         T2IRegisteredParam<string> paramInstructions,
         T2IRegisteredParam<string> paramPostFilter,
         T2IRegisteredParam<string> paramThinking,
-        T2IRegisteredParam<string> paramOnError)
+        T2IRegisteredParam<string> paramOnError,
+        T2IRegisteredParam<bool> paramDisableLlmRequest)
     {
         _cache = cache;
         _paramUseCache = paramUseCache;
@@ -40,6 +42,7 @@ public class PromptHandler
         _paramPostFilter = paramPostFilter;
         _paramThinking = paramThinking;
         _paramOnError = paramOnError;
+        _paramDisableLlmRequest = paramDisableLlmRequest;
     }
 
     /// <summary>
@@ -50,6 +53,7 @@ public class PromptHandler
         var prompt = userInput.Get(T2IParamTypes.Prompt);
         var modelId = userInput.Get(_paramModelId);
         var useCache = userInput.Get(_paramUseCache);
+        var disableLlmRequest = userInput.Get(_paramDisableLlmRequest, defVal: false);
 
         if (userInput.ExtraMeta.Remove("mp_is_refining", out var isRefiningValue)
             && bool.TryParse(isRefiningValue as string, out var isRefining)
@@ -68,6 +72,10 @@ public class PromptHandler
         if (matches.Count == 0)
         {
             prompt = CleanOrphanedMpresponse(prompt);
+            if (disableLlmRequest)
+            {
+                prompt = ApplyPostFilter(prompt, userInput);
+            }
             FinalizePrompt(prompt, "", userInput);
             return;
         }
@@ -77,7 +85,7 @@ public class PromptHandler
             userInput.ExtraMeta["original_prompt"] = prompt;
         }
 
-        if (string.IsNullOrWhiteSpace(modelId))
+        if (!disableLlmRequest && string.IsNullOrWhiteSpace(modelId))
         {
             prompt = StripMppromptTags(prompt);
             prompt = StripMpresponseTags(prompt);
@@ -96,11 +104,19 @@ public class PromptHandler
             var preDataRaw = match.Groups[1].Success ? match.Groups[1].Value : null;
             ParsePreData(preDataRaw, out string instructionId, out string modelSpec, out bool printResponse);
             var mppromptContent = ResolveMpresponseReferences(match.Groups[2].Value, llmResponses);
-            var tagModelId = ResolveModel(modelSpec, userInput);
-            var effectiveModelId = string.IsNullOrWhiteSpace(tagModelId) ? modelId : tagModelId;
-            modelsUsed.Add(effectiveModelId);
+            string llmResponse;
+            if (disableLlmRequest)
+            {
+                llmResponse = ApplyPostFilter(mppromptContent, userInput);
+            }
+            else
+            {
+                var tagModelId = ResolveModel(modelSpec, userInput);
+                var effectiveModelId = string.IsNullOrWhiteSpace(tagModelId) ? modelId : tagModelId;
+                modelsUsed.Add(effectiveModelId);
 
-            var llmResponse = GetLlmResponse(mppromptContent, userInput, instructionId, effectiveModelId, useCache, i, fullTag);
+                llmResponse = GetLlmResponse(mppromptContent, userInput, instructionId, effectiveModelId, useCache, i, fullTag);
+            }
             llmResponses.Add(llmResponse);
             prompt = printResponse
                 ? InjectLlmResponse(prompt, fullTag, llmResponse)
@@ -433,12 +449,12 @@ public class PromptHandler
                 int eq = inner.IndexOf('=');
                 if (eq > 0)
                 {
-                    response = response.Replace(inner[..eq], inner[(eq + 1)..], StringComparison.Ordinal);
+                    response = response.Replace(inner[..eq], inner[(eq + 1)..], StringComparison.OrdinalIgnoreCase);
                     continue;
                 }
             }
 
-            response = response.Replace(filter, "", StringComparison.Ordinal);
+            response = response.Replace(filter, "", StringComparison.OrdinalIgnoreCase);
         }
 
         return response.Trim();

@@ -17,6 +17,7 @@ public class MagicPromptExtension : Extension
     private static T2IRegisteredParam<string> _paramPostFilter;
     private static T2IRegisteredParam<string> _paramThinking;
     private static T2IRegisteredParam<string> _paramOnError;
+    private static T2IRegisteredParam<bool> _paramDisableLlmRequest;
 
     public override void OnPreInit()
     {
@@ -130,6 +131,15 @@ public class MagicPromptExtension : Extension
             OrderPriority: 7
         ));
 
+        _paramDisableLlmRequest = T2IParamTypes.Register<bool>(new T2IParamType(
+            Name: "Disable LLM Request",
+            Description: "Skip LLM requests and cached responses, applying MP Post-Filter to the original mpprompt tag text instead. If there are no mpprompt tags, filter the whole prompt. No MP Model ID is required.",
+            Default: "false",
+            IgnoreIf: "false",
+            Group: paramGroup,
+            OrderPriority: 8
+        ));
+
         PromptRegion.RegisterCustomPrefix("mpprompt");
         PromptRegion.RegisterCustomPrefix("mpresponse");
         T2IPromptHandling.PromptTagPostProcessors["mpprompt"] = ProcessMppromptTag;
@@ -158,7 +168,7 @@ public class MagicPromptExtension : Extension
     {
         T2IParamInput.LateSpecialParameterHandlers.Add(userInput =>
         {
-            var handler = new PromptHandler(_promptCache, _paramUseCache, _paramModelId, _paramInstructions, _paramPostFilter, _paramThinking, _paramOnError);
+            var handler = new PromptHandler(_promptCache, _paramUseCache, _paramModelId, _paramInstructions, _paramPostFilter, _paramThinking, _paramOnError, _paramDisableLlmRequest);
             handler.ProcessPrompt(userInput);
         });
     }
