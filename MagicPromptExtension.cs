@@ -144,6 +144,7 @@ public class MagicPromptExtension : Extension
         PromptRegion.RegisterCustomPrefix("mpresponse");
         T2IPromptHandling.PromptTagPostProcessors["mpprompt"] = ProcessMppromptTag;
         T2IPromptHandling.PromptTagPostProcessors["mpresponse"] = ProcessMpresponseTag;
+        T2IParamInput.SpecialParameterHandlers.Add(PromptHandler.NormalizeInlinePostFilters);
         RegisterLateParameterHandler();
     }
 
@@ -161,7 +162,8 @@ public class MagicPromptExtension : Extension
 
     private static string ProcessMpresponseTag(string data, T2IPromptHandling.PromptTagContext context)
     {
-        return $"<mpresponse:{data}>";
+        var filterPart = !string.IsNullOrEmpty(context.PreData) ? $"[{context.PreData}]" : "";
+        return $"<mpresponse{filterPart}:{data}>";
     }
 
     private static void RegisterLateParameterHandler()

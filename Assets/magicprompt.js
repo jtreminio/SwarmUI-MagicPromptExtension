@@ -582,6 +582,8 @@ promptTabComplete.registerPrefix('mpresponse', 'Reference the LLM response from 
     return [
         '\nUse <mpresponse:N> to reference the LLM response from the Nth mpprompt tag (0-indexed).',
         '\nExample: <mpresponse:0> returns the response from the first mpprompt tag.',
+        '\nApply filters only when inserting it: <mpresponse|"cat=dog","red":0>.',
+        '\nUse "match=replacement" to replace, or "match" to delete.',
         '\nThis allows chaining: use one LLM response as input to another mpprompt.',
         '\nNote: You can only reference responses from mpprompt tags that appear BEFORE this reference.',
         '\nExample usage:',

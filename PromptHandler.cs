@@ -1,4 +1,5 @@
 using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 using Hartsy.Extensions.MagicPromptExtension.WebAPI;
 using Newtonsoft.Json.Linq;
@@ -9,10 +10,15 @@ namespace Hartsy.Extensions.MagicPromptExtension;
 
 public class PromptHandler
 {
-    // Matches <mpprompt:...> and <mpprompt[InstructionName]:...>
-    // Group 1 = optional comma-separated pre-data, Group 2 = prompt content (handles nested tags)
-    private static readonly Regex MppromptRegex = new(@"<mpprompt(?:\[([^\]]+)\])?:((?:[^<>]|<[^>]*>)+)>", RegexOptions.Compiled);
-    private static readonly Regex MpresponseRegex = new(@"<mpresponse:(\d+)>", RegexOptions.Compiled);
+    // Matches <mpprompt:...>, <mpprompt[InstructionName]:...>, and either form with inline post-filters.
+    // Group 1 = optional comma-separated pre-data, Group 2 = optional inline filters,
+    // Group 3 = prompt content (handles nested tags).
+    private static readonly Regex MppromptRegex = new(@"<mpprompt(?:\[([^\]]+)\])?(?:\|\s*((?:""[^""]+""\s*)(?:,\s*""[^""]+""\s*)*))?:((?:[^<>]|<[^>]*>)+)>", RegexOptions.Compiled);
+    private static readonly Regex InlinePostFilterRegex = new(@"""[^""]+""", RegexOptions.Compiled);
+    // Group 1 = optional encoded inline filter, Group 2 = optional user-facing inline filters,
+    // Group 3 = response index.
+    private static readonly Regex MpresponseRegex = new(@"<mpresponse(?:\[([^\]]+)\])?(?:\|\s*((?:""[^""]+""\s*)(?:,\s*""[^""]+""\s*)*))?:(\d+)>", RegexOptions.Compiled);
+    private const string InlinePostFilterTokenPrefix = "__mp_inline_post_filter__";
     private readonly PromptCache _cache;
     private readonly T2IRegisteredParam<bool> _paramUseCache;
     private readonly T2IRegisteredParam<string> _paramModelId;
@@ -24,6 +30,56 @@ public class PromptHandler
 
     public const string OnErrorSkip = "skip";
     public const string OnErrorFallback = "fallback";
+
+    /// <summary>
+    /// Rewrites inline-filter tags to standard mpprompt syntax before Swarm parses nested prompt tags.
+    /// The filter is stored as an opaque pre-data token and decoded later by <see cref="ParsePreData"/>.
+    /// </summary>
+    public static void NormalizeInlinePostFilters(T2IParamInput userInput)
+    {
+        var prompt = userInput.Get(T2IParamTypes.Prompt);
+        if (string.IsNullOrEmpty(prompt))
+        {
+            return;
+        }
+
+        var normalized = MpresponseRegex.Replace(prompt, match =>
+        {
+            if (!match.Groups[2].Success)
+            {
+                return match.Value;
+            }
+
+            var encodedFilter = Convert.ToBase64String(Encoding.UTF8.GetBytes(match.Groups[2].Value));
+            return $"<mpresponse[{InlinePostFilterTokenPrefix}{encodedFilter}]:{match.Groups[3].Value}>";
+        });
+
+        normalized = MppromptRegex.Replace(normalized, match =>
+        {
+            if (!match.Groups[2].Success)
+            {
+                return match.Value;
+            }
+
+            var encodedFilter = Convert.ToBase64String(Encoding.UTF8.GetBytes(match.Groups[2].Value));
+            var filterToken = $"{InlinePostFilterTokenPrefix}{encodedFilter}";
+            var preData = match.Groups[1].Success
+                ? $"{match.Groups[1].Value},{filterToken}"
+                : filterToken;
+            return $"<mpprompt[{preData}]:{match.Groups[3].Value}>";
+        });
+
+        if (normalized == prompt)
+        {
+            return;
+        }
+
+        if (!userInput.ExtraMeta.ContainsKey("original_prompt"))
+        {
+            userInput.ExtraMeta["original_prompt"] = prompt;
+        }
+        userInput.Set(T2IParamTypes.Prompt, normalized);
+    }
 
     public PromptHandler(
         PromptCache cache,
@@ -93,7 +149,7 @@ public class PromptHandler
             return;
         }
 
-        var firstMppromptContent = matches[0].Groups[2].Value;
+        var firstMppromptContent = matches[0].Groups[3].Value;
         var llmResponses = new List<string>();
         var modelsUsed = new List<string>();
 
@@ -102,12 +158,13 @@ public class PromptHandler
             var match = matches[i];
             var fullTag = match.Value;
             var preDataRaw = match.Groups[1].Success ? match.Groups[1].Value : null;
-            ParsePreData(preDataRaw, out string instructionId, out string modelSpec, out bool printResponse);
-            var mppromptContent = ResolveMpresponseReferences(match.Groups[2].Value, llmResponses);
+            var inlinePostFilterRaw = match.Groups[2].Success ? match.Groups[2].Value : null;
+            ParsePreData(preDataRaw, inlinePostFilterRaw, out string instructionId, out string modelSpec, out bool printResponse, out string inlinePostFilter);
+            var mppromptContent = ResolveMpresponseReferences(match.Groups[3].Value, llmResponses);
             string llmResponse;
             if (disableLlmRequest)
             {
-                llmResponse = ApplyPostFilter(mppromptContent, userInput);
+                llmResponse = ApplyPostFilter(mppromptContent, userInput, inlinePostFilter);
             }
             else
             {
@@ -115,7 +172,7 @@ public class PromptHandler
                 var effectiveModelId = string.IsNullOrWhiteSpace(tagModelId) ? modelId : tagModelId;
                 modelsUsed.Add(effectiveModelId);
 
-                llmResponse = GetLlmResponse(mppromptContent, userInput, instructionId, effectiveModelId, useCache, i, fullTag);
+                llmResponse = GetLlmResponse(mppromptContent, userInput, instructionId, effectiveModelId, useCache, i, fullTag, inlinePostFilter);
             }
             llmResponses.Add(llmResponse);
             prompt = printResponse
@@ -128,7 +185,7 @@ public class PromptHandler
         FinalizePrompt(prompt, firstMppromptContent, userInput);
     }
 
-    private string GetLlmResponse(string content, T2IParamInput userInput, string instructionId, string modelId, bool useCache, int tagIndex, string fullTag)
+    private string GetLlmResponse(string content, T2IParamInput userInput, string instructionId, string modelId, bool useCache, int tagIndex, string fullTag, string inlinePostFilter)
     {
         string response = null;
         string error = null;
@@ -155,7 +212,7 @@ public class PromptHandler
             return HandleFailedResponse(content, userInput, tagIndex, fullTag, error);
         }
 
-        return ApplyPostFilter(response, userInput);
+        return ApplyPostFilter(response, userInput, inlinePostFilter);
     }
 
     /// <summary>
@@ -221,20 +278,32 @@ public class PromptHandler
     /// - [Action, gpt-4o, false]  => instruction "Action", model "gpt-4o", don't print
     /// - [false]                  => default instruction, default model, don't print
     /// </summary>
-    private static void ParsePreData(string raw, out string instructionId, out string modelSpec, out bool printResponse)
+    private static void ParsePreData(string raw, string inlinePostFilterRaw, out string instructionId, out string modelSpec, out bool printResponse, out string inlinePostFilter)
     {
         instructionId = null;
         modelSpec = null;
         printResponse = true;
+        inlinePostFilter = inlinePostFilterRaw;
 
         if (string.IsNullOrWhiteSpace(raw))
         {
             return;
         }
 
-        var parameters = raw.Split(',', StringSplitOptions.None)
-            .Select(parameter => parameter.Trim())
-            .ToArray();
+        var parameters = new List<string>();
+        foreach (var rawParameter in raw.Split(',', StringSplitOptions.None))
+        {
+            var parameter = rawParameter.Trim();
+            if (!TryDecodeInlinePostFilter(parameter, ref inlinePostFilter))
+            {
+                parameters.Add(parameter);
+            }
+        }
+
+        if (parameters.Count == 0)
+        {
+            return;
+        }
 
         // The output flag may occupy any of the supported parameter positions. Remove it from the
         // instruction/model values so it can never be sent to the instruction resolver or model selector.
@@ -243,10 +312,10 @@ public class PromptHandler
             printResponse = false;
         }
 
-        var instructionPart = parameters.Length > 0 && !IsFalseParameter(parameters[0])
+        var instructionPart = parameters.Count > 0 && !IsFalseParameter(parameters[0])
             ? parameters[0]
             : null;
-        var modelPart = parameters.Length > 1 && !IsFalseParameter(parameters[1])
+        var modelPart = parameters.Count > 1 && !IsFalseParameter(parameters[1])
             ? parameters[1]
             : null;
 
@@ -274,6 +343,25 @@ public class PromptHandler
 
         instructionId = string.IsNullOrWhiteSpace(instructionPart) ? null : instructionPart;
         modelSpec = string.IsNullOrWhiteSpace(modelPart) ? null : modelPart;
+    }
+
+    private static bool TryDecodeInlinePostFilter(string parameter, ref string inlinePostFilter)
+    {
+        if (!parameter.StartsWith(InlinePostFilterTokenPrefix, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        try
+        {
+            var encodedFilter = parameter[InlinePostFilterTokenPrefix.Length..];
+            inlinePostFilter = Encoding.UTF8.GetString(Convert.FromBase64String(encodedFilter));
+            return true;
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
     }
 
     private static bool IsFalseParameter(string parameter)
@@ -362,14 +450,19 @@ public class PromptHandler
     {
         return MpresponseRegex.Replace(text, m =>
         {
-            if (!int.TryParse(m.Groups[1].Value, out int refIndex))
+            if (!int.TryParse(m.Groups[3].Value, out int refIndex))
             {
                 return m.Value;
             }
 
             if (refIndex >= 0 && refIndex < llmResponses.Count)
             {
-                return llmResponses[refIndex];
+                var inlinePostFilter = m.Groups[2].Success ? m.Groups[2].Value : null;
+                if (m.Groups[1].Success)
+                {
+                    TryDecodeInlinePostFilter(m.Groups[1].Value, ref inlinePostFilter);
+                }
+                return ApplyInlinePostFilter(llmResponses[refIndex], inlinePostFilter);
             }
 
             if (logStandalone)
@@ -395,7 +488,7 @@ public class PromptHandler
 
     private static string StripMppromptTags(string prompt)
     {
-        return MppromptRegex.Replace(prompt, m => m.Groups[2].Value);
+        return MppromptRegex.Replace(prompt, m => m.Groups[3].Value);
     }
 
     private static string StripMpresponseTags(string prompt)
@@ -426,16 +519,35 @@ public class PromptHandler
         return lineBreaks.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : lineBreaks[0].ToString();
     }
 
-    private string ApplyPostFilter(string response, T2IParamInput userInput)
+    private string ApplyPostFilter(string response, T2IParamInput userInput, string inlinePostFilter = null)
     {
         string postFilter = userInput.Get(_paramPostFilter, defVal: string.Empty);
-        if (string.IsNullOrEmpty(postFilter))
+        if (!string.IsNullOrEmpty(postFilter))
         {
-            return response.Trim();
+            response = ApplyPostFilters(response, postFilter.Split('\n', StringSplitOptions.RemoveEmptyEntries));
         }
 
-        string[] filters = postFilter.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-        foreach (string filter in filters)
+        if (!string.IsNullOrEmpty(inlinePostFilter))
+        {
+            response = ApplyInlinePostFilter(response, inlinePostFilter);
+        }
+
+        return response.Trim();
+    }
+
+    private static string ApplyInlinePostFilter(string response, string inlinePostFilter)
+    {
+        if (string.IsNullOrEmpty(inlinePostFilter))
+        {
+            return response;
+        }
+
+        return ApplyPostFilters(response, InlinePostFilterRegex.Matches(inlinePostFilter).Select(match => match.Value)).Trim();
+    }
+
+    private static string ApplyPostFilters(string response, IEnumerable<string> filters)
+    {
+        foreach (var filter in filters)
         {
             if (string.IsNullOrEmpty(filter))
             {
@@ -452,12 +564,15 @@ public class PromptHandler
                     response = response.Replace(inner[..eq], inner[(eq + 1)..], StringComparison.OrdinalIgnoreCase);
                     continue;
                 }
+
+                response = response.Replace(inner, "", StringComparison.OrdinalIgnoreCase);
+                continue;
             }
 
             response = response.Replace(filter, "", StringComparison.OrdinalIgnoreCase);
         }
 
-        return response.Trim();
+        return response;
     }
 
     private static void FinalizePrompt(string prompt, string originalMpprompt, T2IParamInput userInput)
