@@ -221,7 +221,6 @@ if (!window.ChatHandler) {
             }
             catch (error) {
                 console.error('Chat submission error:', error);
-                this.appendMessage('system', `Error: ${error.message}`);
             }
             finally {
                 // Hide typing indicator
@@ -342,7 +341,6 @@ if (!window.ChatHandler) {
             }
             catch (error) {
                 console.error('Message regeneration error:', error);
-                this.appendMessage('system', `Error: ${error.message}`);
             }
             finally {
                 this.elements.loadingIndicator.style.display = 'none';
@@ -415,11 +413,7 @@ async function handleChatResponse(response) {
     try {
         if (!response.success) {
             stopTypingAnimation();
-            if (response.error && (response.error.includes("API Key not found") || response.error.includes("API key"))) {
-                showChatError(response.error);
-            } else {
-                showError(response.error || 'Unknown error');
-            }
+            console.error('MagicPrompt chat request failed:', response.error || 'Unknown error');
             aiTyping = false;
             return;
         }

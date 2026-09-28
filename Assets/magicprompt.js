@@ -7,6 +7,19 @@
 
 'use strict';
 
+// Swarm routes generation failures through its shared toast handler. Keep the
+// server's skip/queue behavior, but report MagicPrompt failures only in the console.
+if (typeof showError === 'function') {
+    const originalShowError = showError;
+    showError = function (message, ...args) {
+        if (typeof message === 'string' && message.startsWith('MagicPrompt:')) {
+            console.error(message);
+            return;
+        }
+        return originalShowError.call(this, message, ...args);
+    };
+}
+
 // Initialize MagicPrompt global namespace if it doesn't exist
 if (!window.MP) {
     window.MP = {
@@ -115,6 +128,11 @@ if (!window.MP) {
                                     console.error('API request failed:', data.error);
                                     reject(new Error(data.error || 'API request failed'));
                                 }
+                            },
+                            0,
+                            error => {
+                                console.error('MagicPrompt API request failed:', error);
+                                reject(new Error(error));
                             }
                         );
                     });
@@ -228,7 +246,7 @@ if (!window.MP) {
                         errorMessage = match[1].trim();
                     }
                 }
-                showError(errorMessage);
+                console.error('MagicPrompt:', errorMessage);
                 return null;
             }
         },

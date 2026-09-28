@@ -150,7 +150,6 @@ if (!window.VisionTab) {
             } catch (error) {
                 console.error('Caption generation error:', error);
                 this.elements.loadingSpinner.classList.remove('active');
-                showError(`Failed to generate caption: ${error.message}`);
             }
         }
 
