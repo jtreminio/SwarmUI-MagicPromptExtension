@@ -182,7 +182,7 @@ public static class BackendSchema
         };
         if (isOpenRouter)
         {
-            body["max_completion_tokens"] = 4096;
+            body["max_completion_tokens"] = 128000;
         }
         else
         {
