@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <NuGetAudit>false</NuGetAudit>
+    <SwarmBinaryDirectory Condition="'$(SwarmBinaryDirectory)' == ''">$(MSBuildThisFileDirectory)../../../bin/live_release</SwarmBinaryDirectory>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <Reference Include="$(SwarmBinaryDirectory)/*.dll" />
+    <Compile Include="../*.cs" />
+    <Compile Include="../WebAPI/**/*.cs" />
+    <Compile Include="../../../GlobalUsings.cs" />
+  </ItemGroup>
+</Project>

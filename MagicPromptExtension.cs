@@ -150,14 +150,15 @@ public class MagicPromptExtension : Extension
 
     private static string ProcessMppromptTag(string data, T2IPromptHandling.PromptTagContext context)
     {
-        if (context.Variables.Count > 0 && context.Input != null)
-        {
-            context.Input.ExtraMeta["mp_variables"] = new Dictionary<string, string>(context.Variables);
-        }
-
         var instructionPart = !string.IsNullOrEmpty(context.PreData) ? $"[{context.PreData}]" : "";
         var parsedData = context.Parse(data);
-        return $"<mpprompt{instructionPart}:{parsedData}>";
+        if (context.Variables.Count > 0 && context.Input != null)
+        {
+            context.Input.ExtraMeta["mp_variables"] = context.Variables.ToDictionary(
+                pair => pair.Key, pair => PromptTagSyntax.RestoreLiteralBrackets(pair.Value, context.Input));
+        }
+
+        return $"<mpprompt{instructionPart}:{PromptTagSyntax.EncodeParsedPrompt(parsedData, context.Input)}>";
     }
 
     private static string ProcessMpresponseTag(string data, T2IPromptHandling.PromptTagContext context)

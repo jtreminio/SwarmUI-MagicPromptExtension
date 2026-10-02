@@ -32,7 +32,7 @@ public class PromptHandler
     public const string OnErrorFallback = "fallback";
 
     /// <summary>
-    /// Rewrites inline-filter tags to standard mpprompt syntax before Swarm parses nested prompt tags.
+    /// Rewrites inline filters and protects literal brackets before Swarm parses nested prompt tags.
     /// The filter is stored as an opaque pre-data token and decoded later by <see cref="ParsePreData"/>.
     /// </summary>
     public static void NormalizeInlinePostFilters(T2IParamInput userInput)
@@ -54,7 +54,7 @@ public class PromptHandler
             return $"<mpresponse[{InlinePostFilterTokenPrefix}{encodedFilter}]:{match.Groups[3].Value}>";
         });
 
-        normalized = MppromptRegex.Replace(normalized, match =>
+        normalized = PromptTagSyntax.MppromptHeaderRegex.Replace(normalized, match =>
         {
             if (!match.Groups[2].Success)
             {
@@ -66,8 +66,10 @@ public class PromptHandler
             var preData = match.Groups[1].Success
                 ? $"{match.Groups[1].Value},{filterToken}"
                 : filterToken;
-            return $"<mpprompt[{preData}]:{match.Groups[3].Value}>";
+            return $"<mpprompt[{preData}]:";
         });
+
+        normalized = PromptTagSyntax.ProtectLiteralBrackets(normalized, userInput);
 
         if (normalized == prompt)
         {
@@ -143,13 +145,13 @@ public class PromptHandler
 
         if (!disableLlmRequest && string.IsNullOrWhiteSpace(modelId))
         {
-            prompt = StripMppromptTags(prompt);
+            prompt = StripMppromptTags(prompt, userInput);
             prompt = StripMpresponseTags(prompt);
             FinalizePrompt(prompt, "", userInput);
             return;
         }
 
-        var firstMppromptContent = matches[0].Groups[3].Value;
+        var firstMppromptContent = PromptTagSyntax.DecodeParsedPrompt(matches[0].Groups[3].Value, userInput);
         var llmResponses = new List<string>();
         var modelsUsed = new List<string>();
 
@@ -160,7 +162,7 @@ public class PromptHandler
             var preDataRaw = match.Groups[1].Success ? match.Groups[1].Value : null;
             var inlinePostFilterRaw = match.Groups[2].Success ? match.Groups[2].Value : null;
             ParsePreData(preDataRaw, inlinePostFilterRaw, out string instructionId, out string modelSpec, out bool printResponse, out string inlinePostFilter);
-            var mppromptContent = ResolveMpresponseReferences(match.Groups[3].Value, llmResponses);
+            var mppromptContent = ResolveMpresponseReferences(PromptTagSyntax.DecodeParsedPrompt(match.Groups[3].Value, userInput), llmResponses);
             string llmResponse;
             if (disableLlmRequest)
             {
@@ -486,9 +488,9 @@ public class PromptHandler
         return prompt;
     }
 
-    private static string StripMppromptTags(string prompt)
+    private static string StripMppromptTags(string prompt, T2IParamInput userInput)
     {
-        return MppromptRegex.Replace(prompt, m => m.Groups[3].Value);
+        return MppromptRegex.Replace(prompt, m => PromptTagSyntax.DecodeParsedPrompt(m.Groups[3].Value, userInput));
     }
 
     private static string StripMpresponseTags(string prompt)
@@ -577,6 +579,12 @@ public class PromptHandler
 
     private static void FinalizePrompt(string prompt, string originalMpprompt, T2IParamInput userInput)
     {
+        prompt = PromptTagSyntax.RestoreLiteralBrackets(prompt, userInput);
+        if (userInput.TryGet(T2IParamTypes.NegativePrompt, out string negativePrompt))
+        {
+            userInput.Set(T2IParamTypes.NegativePrompt, PromptTagSyntax.RestoreParsedPrompts(negativePrompt, userInput));
+        }
+        PromptTagSyntax.ClearParsingState(userInput);
         userInput.Set(T2IParamTypes.Prompt, prompt.Replace("<mporiginal>", originalMpprompt).Trim());
     }
 }
