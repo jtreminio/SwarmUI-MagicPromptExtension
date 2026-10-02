@@ -412,6 +412,10 @@ function magicPromptRefineImage(src) {
             if (typeof metadataFull.sui_extra_data?.original_prompt === 'string') {
                 actualInput.extra_metadata.original_prompt = metadataFull.sui_extra_data.original_prompt;
             }
+            let variables = metadataFull.sui_extra_data?.mp_variables;
+            if (variables && typeof variables === 'object' && !Array.isArray(variables)) {
+                actualInput.extra_metadata.mp_refined_variables = JSON.stringify(variables);
+            }
             togglerInit.checked = togglerInitOriginal;
             togglerRefine.checked = togglerRefineOriginal;
             triggerChangeFor(togglerInit);

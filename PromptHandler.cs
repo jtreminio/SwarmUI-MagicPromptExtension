@@ -121,6 +121,11 @@ public class PromptHandler
             {
                 throw new SwarmUserErrorException("Refine Img requires a finalized prompt in the selected image metadata.");
             }
+            // Restore variables after prompt parsing so they only carry forward as metadata.
+            if (userInput.ExtraMeta.Remove("mp_refined_variables", out var refinedVariablesValue) && refinedVariablesValue is string refinedVariablesJson)
+            {
+                userInput.ExtraMeta["mp_variables"] = JObject.Parse(refinedVariablesJson).ToObject<Dictionary<string, string>>();
+            }
             FinalizePrompt(refinedPrompt, "", userInput);
             return;
         }

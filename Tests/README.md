@@ -9,5 +9,5 @@ The default binary directory is SwarmUI's `src/bin/live_release`. Override it wi
 Run the frontend regression checks:
 
 ```sh
-node --test Tests/console-errors.test.cjs
+node --test Tests/*.test.cjs
 ```

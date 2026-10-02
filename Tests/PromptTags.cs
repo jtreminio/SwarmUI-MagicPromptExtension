@@ -1,7 +1,10 @@
 using System.Reflection;
 using Hartsy.Extensions.MagicPromptExtension;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using SwarmUI.Text2Image;
 using SwarmUI.Utils;
+using SwarmUI.WebAPI;
 
 internal static class PromptTagChecks
 {
@@ -98,6 +101,65 @@ internal static class PromptTagChecks
         Check("<mpprompt:<wildcard:bracket-test>>", ">:( <8)");
         Check("<mpprompt[false]:<wildcard:bracket-test>> <mpprompt:<mpresponse:0>>", ">:( <8)");
         WildcardsHelper.WildcardFiles.TryRemove("bracket-test", out _);
+
+        var savedVariables = new Dictionary<string, string>
+        {
+            ["prompt"] = "Source MP Prompt",
+            ["character"] = "A woman in a red coat",
+            ["literal"] = "<random:red|blue> >:( <8)",
+            ["unicode"] = "雪\n\"quoted\" \\ text",
+            ["empty"] = ""
+        };
+        var finalizedPrompt = "A woman in a red coat";
+        var sourcePrompt = "<mpprompt:<var:character>>";
+
+        T2IParamInput Refine(Dictionary<string, string> variables)
+        {
+            // Exercise Swarm's actual request conversion, which accepts metadata as strings.
+            var extra = new JObject
+            {
+                ["mp_is_refining"] = true,
+                ["mp_refined_prompt"] = finalizedPrompt,
+                ["original_prompt"] = sourcePrompt
+            };
+            if (variables != null)
+            {
+                extra["mp_refined_variables"] = JsonConvert.SerializeObject(variables);
+            }
+            var input = T2IAPI.RequestToParams(null, new JObject { ["extra_metadata"] = extra });
+            input.Set(T2IParamTypes.Prompt, finalizedPrompt);
+            input.Set(T2IParamTypes.NegativePrompt, "blurry");
+            input.Set(T2IParamTypes.Seed, 123L);
+            input.Set(T2IParamTypes.WildcardSeed, 0L);
+            input.Set(disableLlm, false);
+            input.Set(postFilter, "\"red=blue\"");
+            PromptHandler.NormalizeInlinePostFilters(input);
+            input.PreparsePromptLikes();
+            handler.ProcessPrompt(input);
+            Equal(finalizedPrompt, input.Get(T2IParamTypes.Prompt), "refine finalized prompt");
+            Equal("blurry", input.Get(T2IParamTypes.NegativePrompt), "refine negative prompt");
+            Equal("123", input.Get(T2IParamTypes.Seed).ToString(), "refine seed");
+            Equal(sourcePrompt, (string)input.ExtraMeta["original_prompt"], "refine original prompt");
+            if (input.ExtraMeta.Keys.Any(key => key.StartsWith("mp_refined_") || key == "mp_is_refining"))
+            {
+                throw new Exception("Internal refine marker leaked into metadata.");
+            }
+            return input;
+        }
+
+        var refinedInput = Refine(savedVariables);
+        var refinedMetadata = JObject.Parse(refinedInput.GenRawMetadata());
+        if (!JToken.DeepEquals(JObject.FromObject(savedVariables), refinedMetadata["sui_extra_data"]?["mp_variables"]))
+        {
+            throw new Exception("Refine Img did not preserve variable values as an object in image metadata.");
+        }
+        passed++;
+        Equal(JsonConvert.SerializeObject(Refine(null).ToJSON()), JsonConvert.SerializeObject(refinedInput.ToJSON()), "vars do not change generation parameters");
+        if (Refine(new Dictionary<string, string>()).BuildExtraDataJObject()["mp_variables"] is not JObject { Count: 0 })
+        {
+            throw new Exception("Refine Img did not preserve an empty variable map.");
+        }
+        passed++;
 
         Console.WriteLine($"Prompt tag checks passed: {passed}");
     }
