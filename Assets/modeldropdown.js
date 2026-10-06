@@ -143,9 +143,11 @@
 
     let rows = [];
     let lastFavoritedRow = null;
+    let blocked = new Set((window.MP && MP.settings && MP.settings.blockedModels &&
+      MP.settings.blockedModels[backendKey]) || []);
     for (let i = 0; i < select.options.length; i++) {
       let opt = select.options[i];
-      if (!opt.value) {
+      if (!opt.value || blocked.has(opt.value) || opt.dataset.blocked === '1') {
         continue;
       }
       let row = buildRow(opt, select, trigger, backendKey);
@@ -357,33 +359,20 @@
       e.preventDefault();
       e.stopPropagation();
       let id = opt.value;
-      let wasSelected = select.value === id;
 
       if (window.MP && typeof window.MP.blockModelId === 'function') {
         window.MP.blockModelId(backendKey, id);
       }
 
-      if (opt.parentNode) {
+      // Removing the selected native option silently selects another model.
+      // Retain it for SwarmUI's parameter value, but hide it from this menu.
+      if (opt.value === select.value) {
+        opt.dataset.blocked = '1';
+      } else if (opt.parentNode) {
         opt.parentNode.removeChild(opt);
       }
       row.remove();
-
-      if (wasSelected) {
-        let firstOption = null;
-        for (let i = 0; i < select.options.length; i++) {
-          if (select.options[i].value) {
-            firstOption = select.options[i];
-            break;
-          }
-        }
-        if (firstOption) {
-          select.value = firstOption.value;
-          if (typeof triggerChangeFor === 'function') {
-            triggerChangeFor(select);
-          }
-        }
-        syncTriggerLabel(select, trigger);
-      }
+      syncTriggerLabel(select, trigger);
     });
 
     row.addEventListener('click', (e) => {

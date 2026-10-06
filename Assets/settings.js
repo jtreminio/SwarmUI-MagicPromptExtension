@@ -153,7 +153,7 @@ function persistModelPrefsToServerInner() {
       } else if (!data.success) {
         console.warn('Model prefs save failed:', data.error);
       }
-      updateModelListOnLeft();
+      updateModelListOnLeft(true);
     },
     0,
     (err) => {
@@ -207,6 +207,7 @@ function refreshAfterPrefsMutation() {
     renderFavoritedModelChips();
   }
   reapplyChatModelSelectFromCachedCatalog();
+  updateModelListOnLeft(true);
   persistModelPrefsDebounced();
 }
 
@@ -436,10 +437,12 @@ function reapplyChatModelSelectFromCachedCatalog() {
   let blocked = new Set(
     (MP.settings.blockedModels && MP.settings.blockedModels[backendId]) || []
   );
+  let catalogIds = new Set(catalog.filter((row) => row && row.model).map((row) => row.model));
   let favorited = new Set(
     (MP.settings.favoritedModels && MP.settings.favoritedModels[backendId]) || []
   );
   let previous = modelSelect.value;
+  let previousOption = Array.from(modelSelect.options).find((opt) => opt.value === previous);
 
   modelSelect.innerHTML = '';
   let defaultOption = new Option('-- Select a model --', '');
@@ -483,11 +486,12 @@ function reapplyChatModelSelectFromCachedCatalog() {
 
   let picked = '';
 
-  if (previous && allowedLookup[previous]) {
+  if (previous && (allowedLookup[previous] || (blocked.has(previous) && catalogIds.has(previous)))) {
     picked = previous;
   }
 
-  else if (MP.settings.model && allowedLookup[MP.settings.model]) {
+  else if (MP.settings.model && (allowedLookup[MP.settings.model] ||
+    (blocked.has(MP.settings.model) && catalogIds.has(MP.settings.model)))) {
 
     picked = MP.settings.model;
   }
@@ -498,6 +502,16 @@ function reapplyChatModelSelectFromCachedCatalog() {
     picked = firstAllowed;
   }
 
+  // A blocked selection still belongs to the active request. Keep its option
+  // until the user chooses another model, but omit it from the picker rows.
+  if (picked && blocked.has(picked)) {
+    let row = catalog.find((item) => item && item.model === picked);
+    let label = row ? mpModelSelectOptionText(row) :
+      (previousOption && previousOption.value === picked ? previousOption.text : picked);
+    let option = new Option(label, picked);
+    option.dataset.blocked = '1';
+    modelSelect.add(option);
+  }
 
 
   MP.settings.model = picked;
@@ -1373,11 +1387,19 @@ function updateModelListOnLeft(preserveSelection = false) {
     }
 
     const previousModelValue = listOfModels.value;
+    const previousModelOption = Array.from(listOfModels.options)
+      .find((opt) => opt.value === previousModelValue);
     listOfModels.innerHTML = '';
     Array.from(modelSelect.options).forEach(opt => {
+      if (preserveSelection && opt.dataset.blocked === '1' && opt.value !== previousModelValue) {
+        return;
+      }
       const option = new Option(opt.text, opt.value);
       if (opt.dataset && opt.dataset.favorited === '1') {
         option.dataset.favorited = '1';
+      }
+      if (opt.dataset && opt.dataset.blocked === '1') {
+        option.dataset.blocked = '1';
       }
       listOfModels.add(option);
     });
@@ -1400,13 +1422,28 @@ function updateModelListOnLeft(preserveSelection = false) {
       }
     }
 
-    // Mirror current selection
+    // Mirror current selection unless a preference edit preserved the main
+    // selection. A blocked selection needs an option to retain its value.
     let targetModelValue = modelSelect.value || '';
     if (preserveSelection && previousModelValue) {
       const stillAvailable = Array.from(listOfModels.options)
         .some((o) => o.value === previousModelValue);
       if (stillAvailable) {
         targetModelValue = previousModelValue;
+      } else {
+        const backendId = MP.settings.backend || getSelectedChatBackendIdFromDom();
+        const blocked = (MP.settings.blockedModels && MP.settings.blockedModels[backendId]) || [];
+        const catalog = MP.cachedChatModelsByBackend && MP.cachedChatModelsByBackend[backendId];
+        if (blocked.includes(previousModelValue) && Array.isArray(catalog) &&
+            catalog.some((row) => row && row.model === previousModelValue)) {
+          const option = new Option(
+            previousModelOption ? previousModelOption.text : previousModelValue,
+            previousModelValue
+          );
+          option.dataset.blocked = '1';
+          listOfModels.add(option);
+          targetModelValue = previousModelValue;
+        }
       }
     }
     listOfModels.value = targetModelValue;
