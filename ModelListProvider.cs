@@ -12,6 +12,15 @@ public static class ModelListProvider
     private static JObject _cachedResponse;
     private static DateTime _cacheTimeUtc;
 
+    /// <summary>Discard the catalog after a provider or preference change.</summary>
+    public static void InvalidateCache()
+    {
+        lock (_cacheLock)
+        {
+            _cachedResponse = null;
+        }
+    }
+
     public static List<string> GetModelList(Session session)
     {
         var defaultResponse = new List<string> { LoadingPlaceholder };
@@ -129,14 +138,14 @@ public static class ModelListProvider
         try
         {
             var list = new List<string>();
-            var response = GetCachedResponse(session);
+            var response = SessionSettings.GetMagicPromptSettings().GetAwaiter().GetResult();
             var settings = response?["settings"] as JObject;
             var instructions = settings?["instructions"] as JObject;
 
             var prompt = instructions?["prompt"]?.ToString();
             if (!string.IsNullOrWhiteSpace(prompt))
             {
-                list.Add("prompt///Enhance Prompt (Default)");
+                list.Add("prompt///Default prompt");
             }
 
             var custom = instructions?["custom"] as JObject;

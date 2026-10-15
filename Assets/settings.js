@@ -1,3516 +1,653 @@
-/**
- * settings.js
- * Handles all settings functionality for the MagicPrompt extension.
- * Manages both UI and backend operations for configuring the extension.
- */
-
+/** Prompt settings: one modal, draft edits, native SwarmUI searchable selects. */
 'use strict';
 
-// Define backends that don't need base URL configuration
-const FIXED_URL_BACKENDS = ['openai', 'openrouter'];
+const MP_BACKENDS = ['openrouter', 'openaiapi'];
+const MP_BUILTINS = { prompt: 'Default prompt', randomprompt: 'Random prompt', instructiongen: 'Instruction generator' };
+let mpSettingsDraft = null;
+let mpEditingInstruction = 'prompt';
+let mpSettingsBusy = false;
+let mpSettingsOpening = false;
+let mpSettingsCloseQueued = false;
+let mpCatalogRequest = 0;
+let mpSaveQueue = Promise.resolve();
 
-// Define default feature to instruction mappings
-const DEFAULT_FEATURE_MAPPINGS = {
-  'enhance-prompt': 'prompt',
-  'magic-vision': 'caption',
-  'chat-mode': 'chat',
-  'vision-mode': 'vision',
-  'prompt-mode': 'prompt',
-  'random-prompt': 'randomprompt',
-   caption: 'caption',
-  'generate-instruction': 'instructiongen',
-};
-
-// Helper function to check if a backend needs base URL configuration
-function needsBaseUrl(backend) {
-  return !FIXED_URL_BACKENDS.includes(backend);
+function mpRequest(route, payload = {}) {
+    return new Promise((resolve, reject) => genericRequest(route, payload, data => {
+        if (data.success) resolve(data);
+        else reject(new Error(data.error || 'Request failed'));
+    }, 0, error => reject(new Error(error?.message || String(error)))));
 }
 
-// Updates base URL visibility based on selected backend
-function updateBaseUrlVisibility(backend, isVision = false) {
-  const containerId = isVision ? 'visionBaseUrlContainer' : 'baseUrlContainer';
-  const container = document.getElementById(containerId);
-  if (container) {
-    container.style.display = needsBaseUrl(backend) ? 'block' : 'none';
-  }
-}
-
-/**
- * Creates a debounced function that delays invoking func until after wait milliseconds
- * @param {Function} func - Function to debounce
- * @param {number} wait - Milliseconds to wait
- * @returns {Function} Debounced function
- */
-function debounce(func, wait) {
-  let timeout;
-  return function executedFunction(...args) {
-    const later = () => {
-      clearTimeout(timeout);
-      func(...args);
-    };
-    clearTimeout(timeout);
-    timeout = setTimeout(later, wait);
-  };
-}
-
-/// Backend ids for chat LLM (radio id suffix lowercase: `openaiAPILLMBtn` → `openaiapi`).
-const CHAT_BACKEND_KEYS = [
-  'ollama',
-  'openrouter',
-  'openaiapi',
-  'openai',
-];
-
-/**
- * @returns {Object<string, string[]>}
- */
-function emptyModelIdMap() {
-  let out = {};
-  for (let i = 0; i < CHAT_BACKEND_KEYS.length; i++) {
-    out[CHAT_BACKEND_KEYS[i]] = [];
-  }
-  return out;
-}
-
-// Legacy alias retained because external callers reference these names.
-const emptyBlockedModelsMap = emptyModelIdMap;
-
-/**
- * @param {*} raw
- * @returns {Object<string, string[]>}
- */
-function normalizeModelIdMapFromServer(raw) {
-  let out = emptyModelIdMap();
-  if (!raw || typeof raw !== 'object') {
-    return out;
-  }
-  for (let i = 0; i < CHAT_BACKEND_KEYS.length; i++) {
-    let key = CHAT_BACKEND_KEYS[i];
-    let candidate = raw[key];
-    if (!Array.isArray(candidate)) {
-      continue;
+function mpNormalizeSettings(settings) {
+    const result = JSON.parse(JSON.stringify(settings));
+    if (!MP_BACKENDS.includes(result.backend)) {
+        result.backend = 'openrouter';
+        result.model = '';
     }
-    let seenObj = {};
-    let list = [];
-    for (let j = 0; j < candidate.length; j++) {
-      let sid = typeof candidate[j] === 'string' ? candidate[j].trim() : '';
-      if (!sid || seenObj[sid]) {
-        continue;
-      }
-      seenObj[sid] = true;
-      list.push(sid);
-    }
-    out[key] = list;
-  }
-  return out;
-}
-
-const normalizeBlockedModelsFromServer = normalizeModelIdMapFromServer;
-
-/**
- * @param {*} from MP.settings.blockedModels or MP.settings.favoritedModels
- * @returns {Object<string, string[]>}
- */
-function cloneModelIdMapForSave(from) {
-  let base = from && typeof from === 'object' ? from : emptyModelIdMap();
-  let out = {};
-  for (let i = 0; i < CHAT_BACKEND_KEYS.length; i++) {
-    let k = CHAT_BACKEND_KEYS[i];
-    let arr = base[k];
-    out[k] = Array.isArray(arr) ? arr.slice() : [];
-  }
-  return out;
-}
-
-const cloneBlockedModelsForSave = cloneModelIdMapForSave;
-
-/** Backend id matching the LLM settings radios. */
-function getSelectedChatBackendIdFromDom() {
-  let sel = document.querySelector('input[name="llmBackend"]:checked');
-  if (sel && sel.id && typeof sel.id === 'string') {
-    return sel.id.replace('LLMBtn', '').toLowerCase();
-  }
-  return MP.settings.backend || 'ollama';
-}
-
-function persistModelPrefsToServerInner() {
-  genericRequest(
-    'SaveMagicPromptSettings',
-    {
-      settings: {
-        blockedModels: cloneModelIdMapForSave(MP.settings.blockedModels),
-        favoritedModels: cloneModelIdMapForSave(MP.settings.favoritedModels),
-      },
-    },
-    (data) => {
-      if (data.success && data.settings) {
-        MP.settings.blockedModels = normalizeModelIdMapFromServer(
-          data.settings.blockedModels
-        );
-        MP.settings.favoritedModels = normalizeModelIdMapFromServer(
-          data.settings.favoritedModels
-        );
-      } else if (!data.success) {
-        console.warn('Model prefs save failed:', data.error);
-      }
-      updateModelListOnLeft(true);
-    },
-    0,
-    (err) => {
-      console.warn('Model prefs save error:', err);
-    }
-  );
-}
-
-const persistModelPrefsDebounced = debounce(persistModelPrefsToServerInner, 450);
-const persistBlockedModelsDebounced = persistModelPrefsDebounced;
-
-function ensureModelIdList(mapKey, backendKey) {
-  if (!MP.settings[mapKey]) {
-    MP.settings[mapKey] = emptyModelIdMap();
-  }
-  if (!Array.isArray(MP.settings[mapKey][backendKey])) {
-    MP.settings[mapKey][backendKey] = [];
-  }
-  return MP.settings[mapKey][backendKey];
-}
-
-function addModelIdToList(mapKey, backendKey, modelId) {
-  let list = ensureModelIdList(mapKey, backendKey);
-  for (let i = 0; i < list.length; i++) {
-    if (list[i] === modelId) {
-      return false;
-    }
-  }
-  list.push(modelId);
-  return true;
-}
-
-function removeModelIdFromList(mapKey, backendKey, modelId) {
-  if (!MP.settings[mapKey] || !Array.isArray(MP.settings[mapKey][backendKey])) {
-    return false;
-  }
-  let before = MP.settings[mapKey][backendKey];
-  let after = before.filter((x) => x !== modelId);
-  if (after.length === before.length) {
-    return false;
-  }
-  MP.settings[mapKey][backendKey] = after;
-  return true;
-}
-
-function refreshAfterPrefsMutation() {
-  if (typeof renderBlockedModelChips === 'function') {
-    renderBlockedModelChips();
-  }
-  if (typeof renderFavoritedModelChips === 'function') {
-    renderFavoritedModelChips();
-  }
-  reapplyChatModelSelectFromCachedCatalog();
-  updateModelListOnLeft(true);
-  persistModelPrefsDebounced();
-}
-
-/**
- * Adds a model id to the blocked list for the given backend (removes it from
- * favorites if present — the two are mutually exclusive) and refreshes
- * dependent UI. Duplicates are ignored.
- * @param {string} backendKey
- * @param {string} modelId
- */
-function blockModelId(backendKey, modelId) {
-  if (!backendKey || !modelId) {
-    return;
-  }
-  let added = addModelIdToList('blockedModels', backendKey, modelId);
-  let removedFromFav = removeModelIdFromList('favoritedModels', backendKey, modelId);
-  if (added || removedFromFav) {
-    refreshAfterPrefsMutation();
-  }
-}
-
-/**
- * Removes a model id from the blocked list. No-op when not blocked.
- * @param {string} backendKey
- * @param {string} modelId
- */
-function unblockModelId(backendKey, modelId) {
-  if (!backendKey || !modelId) {
-    return;
-  }
-  if (removeModelIdFromList('blockedModels', backendKey, modelId)) {
-    refreshAfterPrefsMutation();
-  }
-}
-
-/**
- * Adds a model id to the favorited list for the given backend (removes it
- * from the blocked list if present) and refreshes dependent UI. Favorited
- * models surface at the top of the model dropdown.
- * @param {string} backendKey
- * @param {string} modelId
- */
-function favoriteModelId(backendKey, modelId) {
-  if (!backendKey || !modelId) {
-    return;
-  }
-  let added = addModelIdToList('favoritedModels', backendKey, modelId);
-  let removedFromBlock = removeModelIdFromList('blockedModels', backendKey, modelId);
-  if (added || removedFromBlock) {
-    refreshAfterPrefsMutation();
-  }
-}
-
-/**
- * Removes a model id from the favorited list. No-op when not favorited.
- * @param {string} backendKey
- * @param {string} modelId
- */
-function unfavoriteModelId(backendKey, modelId) {
-  if (!backendKey || !modelId) {
-    return;
-  }
-  if (removeModelIdFromList('favoritedModels', backendKey, modelId)) {
-    refreshAfterPrefsMutation();
-  }
-}
-
-function isModelFavoritedForBackend(backendKey, modelId) {
-  if (!backendKey || !modelId || !MP.settings.favoritedModels) {
-    return false;
-  }
-  let list = MP.settings.favoritedModels[backendKey];
-  return Array.isArray(list) && list.indexOf(modelId) !== -1;
-}
-
-if (!window.MP) {
-  window.MP = {};
-}
-window.MP.blockModelId = blockModelId;
-window.MP.unblockModelId = unblockModelId;
-window.MP.favoriteModelId = favoriteModelId;
-window.MP.unfavoriteModelId = unfavoriteModelId;
-window.MP.isModelFavoritedForBackend = isModelFavoritedForBackend;
-
-/**
- * OUT (completion) cost string from API, or em dash when unknown.
- * @param {*} row
- * @returns {string}
- */
-function mpModelCostOutLabel(row) {
-  if (!row || typeof row.costOut !== 'string') {
-    return '—';
-  }
-  let s = row.costOut.trim();
-  return s || '—';
-}
-
-/**
- * Text for native &lt;select&gt; options (name + OUT cost).
- * @param {*} row
- * @returns {string}
- */
-function mpModelSelectOptionText(row) {
-  let title = (row && (row.name || row.model)) || '';
-  return `${title} ‧ ${mpModelCostOutLabel(row)}`;
-}
-
-/**
- * @param {*} row
- * @returns {number|null}
- */
-function mpModelCatalogCreatedTs(row) {
-  if (!row || row.created === undefined || row.created === null) {
-    return null;
-  }
-  let n = typeof row.created === 'number' ? row.created : parseInt(row.created, 10);
-  if (!Number.isFinite(n) || n <= 0) {
-    return null;
-  }
-  return n;
-}
-
-/**
- * @param {*} row
- * @returns {number|undefined}
- */
-function mpModelCatalogOutUsdMm(row) {
-  if (!row || row.outUsdPerMillion === undefined || row.outUsdPerMillion === null) {
-    return undefined;
-  }
-  let x =
-    typeof row.outUsdPerMillion === 'number'
-      ? row.outUsdPerMillion
-      : parseFloat(row.outUsdPerMillion);
-  if (!Number.isFinite(x)) {
-    return undefined;
-  }
-  return x;
-}
-
-/** @returns {number} */
-function mpModelCatalogNameCompare(a, b) {
-  let na = (((a || {}).name || (a || {}).model) || '').toLowerCase();
-  let nb = (((b || {}).name || (b || {}).model) || '').toLowerCase();
-  if (na < nb) {
-    return -1;
-  }
-  if (na > nb) {
-    return 1;
-  }
-  return 0;
-}
-
-/**
- * Stable sort rules for picker; does not mutate source.
- * @param {unknown[]} catalogSrc
- * @returns {unknown[]}
- */
-function sortBlockedModelsPickerCatalog(catalogSrc) {
-  let slice = catalogSrc.slice();
-  let sortKey = MP.blockedModelsPickerSort || 'default';
-  if (!sortKey || sortKey === 'default') {
-    return slice;
-  }
-  if (sortKey === 'newest') {
-    slice.sort((a, b) => {
-      let ta = mpModelCatalogCreatedTs(a);
-      let tb = mpModelCatalogCreatedTs(b);
-      let ha = ta !== null;
-      let hb = tb !== null;
-      if (ha !== hb) {
-        return hb ? 1 : -1;
-      }
-      if (!ha || ta === tb) {
-        return mpModelCatalogNameCompare(a, b);
-      }
-      return tb - ta;
-    });
-    return slice;
-  }
-  if (sortKey === 'expensive') {
-    slice.sort((a, b) => {
-      let pa = mpModelCatalogOutUsdMm(a);
-      let pb = mpModelCatalogOutUsdMm(b);
-      let ua = typeof pa !== 'number';
-      let ub = typeof pb !== 'number';
-      if (ua !== ub) {
-        return ua ? 1 : -1;
-      }
-      if (!ua && pa !== pb) {
-        return pb - pa;
-      }
-      return mpModelCatalogNameCompare(a, b);
-    });
-    return slice;
-  }
-  return slice;
-}
-
-/** Updates Sort by button caption from `MP.blockedModelsPickerSort`. */
-function refreshBlockedModelsSortButtonLabel() {
-  let btn = document.getElementById('blockedModelsSortByBtn');
-  if (!btn) {
-    return;
-  }
-  let k = MP.blockedModelsPickerSort || 'default';
-  if (k === 'newest') {
-    btn.textContent = 'Sort: Newest';
-  } else if (k === 'expensive') {
-    btn.textContent = 'Sort: Expensive (OUT)';
-  } else {
-    btn.textContent = 'Sort by';
-  }
-}
-
-/**
- * Builds chat model dropdown from cache, excluding blocked ids for backend.
- */
-function reapplyChatModelSelectFromCachedCatalog() {
-  let modelSelect = document.getElementById('modelSelect');
-  let backendId = MP.settings.backend || getSelectedChatBackendIdFromDom();
-  let catalog = MP.cachedChatModelsByBackend && MP.cachedChatModelsByBackend[backendId];
-  if (!modelSelect || !Array.isArray(catalog)) {
-    return;
-  }
-
-  let blocked = new Set(
-    (MP.settings.blockedModels && MP.settings.blockedModels[backendId]) || []
-  );
-  let catalogIds = new Set(catalog.filter((row) => row && row.model).map((row) => row.model));
-  let favorited = new Set(
-    (MP.settings.favoritedModels && MP.settings.favoritedModels[backendId]) || []
-  );
-  let previous = modelSelect.value;
-  let previousOption = Array.from(modelSelect.options).find((opt) => opt.value === previous);
-
-  modelSelect.innerHTML = '';
-  let defaultOption = new Option('-- Select a model --', '');
-  modelSelect.add(defaultOption);
-
-  let seenIds = {};
-  /** @type {{ [id: string]: boolean }} */
-  let allowedLookup = {};
-
-  let firstAllowed = '';
-  // Two-pass build: favorited rows first (in original catalog order), then
-  // the rest. Catalog order within each group is preserved.
-  for (let pass = 0; pass < 2; pass++) {
-    let wantFavorited = pass === 0;
-    for (let i = 0; i < catalog.length; i++) {
-      let row = catalog[i];
-      if (!row || !row.model || seenIds[row.model]) {
-        continue;
-      }
-      if (blocked.has(row.model)) {
-        continue;
-      }
-      let isFav = favorited.has(row.model);
-      if (isFav !== wantFavorited) {
-        continue;
-      }
-
-      seenIds[row.model] = true;
-      let option = new Option(mpModelSelectOptionText(row), row.model);
-      if (isFav) {
-        option.dataset.favorited = '1';
-      }
-      modelSelect.add(option);
-
-      allowedLookup[row.model] = true;
-      if (!firstAllowed) {
-        firstAllowed = row.model;
-      }
-    }
-  }
-
-  let picked = '';
-
-  if (previous && (allowedLookup[previous] || (blocked.has(previous) && catalogIds.has(previous)))) {
-    picked = previous;
-  }
-
-  else if (MP.settings.model && (allowedLookup[MP.settings.model] ||
-    (blocked.has(MP.settings.model) && catalogIds.has(MP.settings.model)))) {
-
-    picked = MP.settings.model;
-  }
-
-
-
-  else {
-    picked = firstAllowed;
-  }
-
-  // A blocked selection still belongs to the active request. Keep its option
-  // until the user chooses another model, but omit it from the picker rows.
-  if (picked && blocked.has(picked)) {
-    let row = catalog.find((item) => item && item.model === picked);
-    let label = row ? mpModelSelectOptionText(row) :
-      (previousOption && previousOption.value === picked ? previousOption.text : picked);
-    let option = new Option(label, picked);
-    option.dataset.blocked = '1';
-    modelSelect.add(option);
-  }
-
-
-  MP.settings.model = picked;
-
-  setModelIfExists(modelSelect, picked);
-
-}
-
-/** Renders picker checkboxes from `MP.cachedChatModelsByBackend`. */
-function rebuildBlockedModelPickerDom() {
-  let listRoot = document.getElementById('blockedModelsPickerList');
-  let filterEl = document.getElementById('blockedModelsFilterInput');
-  let backendId = getSelectedChatBackendIdFromDom();
-  if (!listRoot) {
-    return;
-  }
-
-  listRoot.innerHTML = '';
-  let queryText = '';
-  if (filterEl && typeof filterEl.value === 'string') {
-    queryText = filterEl.value.trim().toLowerCase();
-  }
-  let catalog = MP.cachedChatModelsByBackend && MP.cachedChatModelsByBackend[backendId];
-  if (!Array.isArray(catalog)) {
-    let emptyHint = document.createElement('div');
-    emptyHint.className = 'list-group-item text-muted small';
-    emptyHint.textContent =
-      'Load models first using the dropdown above once your backend is connected.';
-    listRoot.appendChild(emptyHint);
-    return;
-  }
-
-  let sortedCatalog = sortBlockedModelsPickerCatalog(catalog);
-
-  if (!MP.settings.blockedModels) {
-    MP.settings.blockedModels = emptyBlockedModelsMap();
-  }
-  let blockedArr =
-    MP.settings.blockedModels[backendId] || [];
-  let blockedSet = new Set(blockedArr);
-
-  for (let i = 0; i < sortedCatalog.length; i++) {
-    let row = sortedCatalog[i];
-    if (!row || !row.model) {
-      continue;
-    }
-    let label = row.name || row.model;
-    if (queryText) {
-      let lowLabel = ('' + label).toLowerCase();
-      let lowId = ('' + row.model).toLowerCase();
-      if (lowLabel.indexOf(queryText) === -1 && lowId.indexOf(queryText) === -1) {
-        continue;
-      }
-    }
-
-    let wrap = document.createElement('label');
-    wrap.className =
-      'list-group-item list-group-item-action d-flex align-items-center gap-2 w-100 mb-0 mp-blocked-picker-row';
-    let cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.className = 'form-check-input mt-0 flex-shrink-0';
-    cb.checked = blockedSet.has(row.model);
-    let sid = '' + row.model;
-    cb.addEventListener('change', () => {
-      let bk = getSelectedChatBackendIdFromDom();
-      if (cb.checked) {
-        blockModelId(bk, sid);
-      } else {
-        unblockModelId(bk, sid);
-      }
-    });
-    let txt = document.createElement('span');
-    txt.className = 'small text-break mp-blocked-picker-name flex-grow-1';
-    txt.textContent = label;
-    let costCell = document.createElement('span');
-    costCell.className =
-      'small text-muted mp-blocked-picker-out-cost flex-shrink-0';
-    costCell.textContent =
-      `OUT ${mpModelCostOutLabel(row)}`;
-    wrap.appendChild(cb);
-    wrap.appendChild(txt);
-    wrap.appendChild(costCell);
-    listRoot.appendChild(wrap);
-  }
-}
-
-/**
- * Chips for blocked model ids — click removes.
- */
-function renderBlockedModelChips() {
-  let chipsRoot = document.getElementById('blockedModelsChips');
-  let hint = document.getElementById('blockedModelsEmptyHint');
-  let backendId = getSelectedChatBackendIdFromDom();
-  if (!chipsRoot) {
-    return;
-  }
-  if (!MP.settings.blockedModels) {
-    MP.settings.blockedModels = emptyBlockedModelsMap();
-  }
-  let list = MP.settings.blockedModels[backendId];
-  chipsRoot.innerHTML = '';
-  if (!Array.isArray(list) || list.length === 0) {
-    chipsRoot.classList.remove('has-chips');
-    if (hint) {
-      hint.hidden = false;
-    }
-    return;
-  }
-  if (hint) {
-    hint.hidden = true;
-  }
-  chipsRoot.classList.add('has-chips');
-  let catalog = MP.cachedChatModelsByBackend && MP.cachedChatModelsByBackend[backendId];
-
-  /**
-   * @param {string} modelId
-   * @returns {*}
-   */
-  function lookupRow(modelId) {
-    if (!catalog || !Array.isArray(catalog)) {
-      return null;
-    }
-    for (let i = 0; i < catalog.length; i++) {
-      let r = catalog[i];
-      if (r && r.model === modelId) {
-        return r;
-      }
-    }
-    return null;
-  }
-
-  for (let j = 0; j < list.length; j++) {
-    let modelId = list[j];
-    let row = lookupRow(modelId);
-    let baseName = row ? row.name || row.model : modelId;
-    let btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'btn btn-sm btn-outline-secondary mp-blocked-chip mb-1 me-1';
-    btn.dataset.modelId = modelId;
-    btn.setAttribute('role', 'listitem');
-    let removeLabel =
-      typeof modelId === 'string'
-        ? 'Remove '
-            + modelId
-            + ', blocked'
-        : 'Remove from blocked';
-    btn.setAttribute('aria-label', removeLabel);
-    let chipText = `${baseName} ‧ OUT ${mpModelCostOutLabel(row)}`;
-    btn.title = chipText;
-    btn.textContent = chipText;
-    chipsRoot.appendChild(btn);
-  }
-}
-
-function refreshBlockedModelsUI() {
-  renderBlockedModelChips();
-  let collapseEl = document.getElementById('blockedModelsPickerCollapse');
-  let open = !!(collapseEl && collapseEl.classList.contains('show'));
-  if (open) {
-    rebuildBlockedModelPickerDom();
-  }
-  // Favorited models share the same lifecycle (backend change, settings save,
-  // model fetch), so refresh them alongside the blocked UI.
-  refreshFavoritedModelsUI();
-}
-
-/**
- * Mirror of renderBlockedModelChips for the favorited list. Chips appear in
- * the Favorited Models section of the settings modal; clicking one removes
- * the model from favorites.
- */
-function renderFavoritedModelChips() {
-  let chipsRoot = document.getElementById('favoritedModelsChips');
-  let hint = document.getElementById('favoritedModelsEmptyHint');
-  let backendId = getSelectedChatBackendIdFromDom();
-  if (!chipsRoot) {
-    return;
-  }
-  if (!MP.settings.favoritedModels) {
-    MP.settings.favoritedModels = emptyModelIdMap();
-  }
-  let list = MP.settings.favoritedModels[backendId];
-  chipsRoot.innerHTML = '';
-  if (!Array.isArray(list) || list.length === 0) {
-    chipsRoot.classList.remove('has-chips');
-    if (hint) {
-      hint.hidden = false;
-    }
-    return;
-  }
-  if (hint) {
-    hint.hidden = true;
-  }
-  chipsRoot.classList.add('has-chips');
-  let catalog = MP.cachedChatModelsByBackend && MP.cachedChatModelsByBackend[backendId];
-
-  function lookupRow(modelId) {
-    if (!catalog || !Array.isArray(catalog)) {
-      return null;
-    }
-    for (let i = 0; i < catalog.length; i++) {
-      let r = catalog[i];
-      if (r && r.model === modelId) {
-        return r;
-      }
-    }
-    return null;
-  }
-
-  for (let j = 0; j < list.length; j++) {
-    let modelId = list[j];
-    let row = lookupRow(modelId);
-    let baseName = row ? row.name || row.model : modelId;
-    let btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'btn btn-sm btn-outline-secondary mp-favorited-chip mb-1 me-1';
-    btn.dataset.modelId = modelId;
-    btn.setAttribute('role', 'listitem');
-    let removeLabel = typeof modelId === 'string'
-      ? 'Remove ' + modelId + ' from favorites'
-      : 'Remove from favorites';
-    btn.setAttribute('aria-label', removeLabel);
-    let chipText = `★ ${baseName} ‧ OUT ${mpModelCostOutLabel(row)}`;
-    btn.title = chipText;
-    btn.textContent = chipText;
-    chipsRoot.appendChild(btn);
-  }
-}
-
-function refreshFavoritedModelsUI() {
-  renderFavoritedModelChips();
-  let collapseEl = document.getElementById('favoritedModelsPickerCollapse');
-  let open = !!(collapseEl && collapseEl.classList.contains('show'));
-  if (open) {
-    rebuildFavoritedModelPickerDom();
-  }
-}
-
-/**
- * Mirror of rebuildBlockedModelPickerDom for favorites. Uses the same
- * cachedChatModelsByBackend catalog and the favoritedModels filter input.
- */
-function rebuildFavoritedModelPickerDom() {
-  let listRoot = document.getElementById('favoritedModelsPickerList');
-  let filterEl = document.getElementById('favoritedModelsFilterInput');
-  let backendId = getSelectedChatBackendIdFromDom();
-  if (!listRoot) {
-    return;
-  }
-  listRoot.innerHTML = '';
-  let queryText = '';
-  if (filterEl && typeof filterEl.value === 'string') {
-    queryText = filterEl.value.trim().toLowerCase();
-  }
-  let catalog = MP.cachedChatModelsByBackend && MP.cachedChatModelsByBackend[backendId];
-  if (!Array.isArray(catalog)) {
-    let emptyHint = document.createElement('div');
-    emptyHint.className = 'list-group-item text-muted small';
-    emptyHint.textContent = 'Load models first using the dropdown above once your backend is connected.';
-    listRoot.appendChild(emptyHint);
-    return;
-  }
-
-  let sortedCatalog = sortBlockedModelsPickerCatalog(catalog);
-
-  if (!MP.settings.favoritedModels) {
-    MP.settings.favoritedModels = emptyModelIdMap();
-  }
-  let favoritedArr = MP.settings.favoritedModels[backendId] || [];
-  let favoritedSet = new Set(favoritedArr);
-
-  for (let i = 0; i < sortedCatalog.length; i++) {
-    let row = sortedCatalog[i];
-    if (!row || !row.model) {
-      continue;
-    }
-    let label = row.name || row.model;
-    if (queryText) {
-      let lowLabel = ('' + label).toLowerCase();
-      let lowId = ('' + row.model).toLowerCase();
-      if (lowLabel.indexOf(queryText) === -1 && lowId.indexOf(queryText) === -1) {
-        continue;
-      }
-    }
-    let wrap = document.createElement('label');
-    wrap.className =
-      'list-group-item list-group-item-action d-flex align-items-center gap-2 w-100 mb-0 mp-blocked-picker-row';
-    let cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.className = 'form-check-input mt-0 flex-shrink-0';
-    cb.checked = favoritedSet.has(row.model);
-    let sid = '' + row.model;
-    cb.addEventListener('change', () => {
-      let bk = getSelectedChatBackendIdFromDom();
-      if (cb.checked) {
-        favoriteModelId(bk, sid);
-      } else {
-        unfavoriteModelId(bk, sid);
-      }
-    });
-    let txt = document.createElement('span');
-    txt.className = 'small text-break mp-blocked-picker-name flex-grow-1';
-    txt.textContent = label;
-    let costCell = document.createElement('span');
-    costCell.className = 'small text-muted mp-blocked-picker-out-cost flex-shrink-0';
-    costCell.textContent = `OUT ${mpModelCostOutLabel(row)}`;
-    wrap.appendChild(cb);
-    wrap.appendChild(txt);
-    wrap.appendChild(costCell);
-    listRoot.appendChild(wrap);
-  }
-}
-
-/** One-time checkbox / chip / collapse listeners */
-function initBlockedModelsSettingsUi() {
-  if (MP.blockedModelsSettingsUiAttached) {
-    return;
-  }
-  MP.blockedModelsSettingsUiAttached = true;
-
-  let chipsRoot = document.getElementById('blockedModelsChips');
-  if (chipsRoot) {
-    chipsRoot.addEventListener('click', (ev) => {
-      let t = ev.target;
-      let btn =
-        typeof t.closest === 'function' ? t.closest('.mp-blocked-chip') : null;
-      if (!btn || btn.tagName !== 'BUTTON') {
-        return;
-      }
-      let sid = btn.dataset.modelId || '';
-      if (!sid) {
-        return;
-      }
-      let bk = getSelectedChatBackendIdFromDom();
-      unblockModelId(bk, sid);
-      let pickerEl = document.getElementById('blockedModelsPickerCollapse');
-      if (pickerEl && pickerEl.classList.contains('show')) {
-        rebuildBlockedModelPickerDom();
-      }
-    });
-  }
-
-  let favChipsRoot = document.getElementById('favoritedModelsChips');
-  if (favChipsRoot) {
-    favChipsRoot.addEventListener('click', (ev) => {
-      let t = ev.target;
-      let btn =
-        typeof t.closest === 'function' ? t.closest('.mp-favorited-chip') : null;
-      if (!btn || btn.tagName !== 'BUTTON') {
-        return;
-      }
-      let sid = btn.dataset.modelId || '';
-      if (!sid) {
-        return;
-      }
-      let bk = getSelectedChatBackendIdFromDom();
-      unfavoriteModelId(bk, sid);
-      let pickerEl = document.getElementById('favoritedModelsPickerCollapse');
-      if (pickerEl && pickerEl.classList.contains('show')) {
-        rebuildFavoritedModelPickerDom();
-      }
-    });
-  }
-
-  let favFilterEl = document.getElementById('favoritedModelsFilterInput');
-  if (favFilterEl) {
-    favFilterEl.addEventListener(
-      'input',
-      debounce(() => {
-        rebuildFavoritedModelPickerDom();
-      }, 220)
-    );
-  }
-
-  let favPickerCollapse = document.getElementById('favoritedModelsPickerCollapse');
-  let closeFavPickerBtn = document.getElementById('favoritedModelsPickerCloseBtn');
-  if (
-    closeFavPickerBtn &&
-    favPickerCollapse &&
-    typeof bootstrap !== 'undefined' &&
-    bootstrap.Collapse
-  ) {
-    closeFavPickerBtn.addEventListener('click', () => {
-      let inst = bootstrap.Collapse.getInstance(favPickerCollapse);
-      if (!inst) {
-        inst = new bootstrap.Collapse(favPickerCollapse, { toggle: false });
-      }
-      inst.hide();
-      let toggleBtn = document.getElementById('favoritedModelsCollapseToggle');
-      if (toggleBtn && typeof toggleBtn.focus === 'function') {
-        toggleBtn.focus();
-      }
-    });
-  }
-
-  if (favPickerCollapse && typeof favPickerCollapse.addEventListener === 'function') {
-    favPickerCollapse.addEventListener('shown.bs.collapse', () => {
-      rebuildFavoritedModelPickerDom();
-    });
-    favPickerCollapse.addEventListener('hidden.bs.collapse', () => {
-      let fi = document.getElementById('favoritedModelsFilterInput');
-      if (fi) {
-        fi.value = '';
-      }
-      refreshFavoritedModelsUI();
-    });
-  }
-
-  let filterEl = document.getElementById('blockedModelsFilterInput');
-  if (filterEl) {
-    filterEl.addEventListener(
-      'input',
-      debounce(() => {
-        rebuildBlockedModelPickerDom();
-      }, 220)
-    );
-  }
-
-  let pickerCollapse = document.getElementById('blockedModelsPickerCollapse');
-  let closeBlockedPickerBtn = document.getElementById('blockedModelsPickerCloseBtn');
-  if (
-    closeBlockedPickerBtn &&
-    pickerCollapse &&
-    typeof bootstrap !== 'undefined' &&
-    bootstrap.Collapse
-  ) {
-    closeBlockedPickerBtn.addEventListener('click', () => {
-      let inst = bootstrap.Collapse.getInstance(pickerCollapse);
-      if (!inst) {
-        inst = new bootstrap.Collapse(pickerCollapse, { toggle: false });
-      }
-      inst.hide();
-      let toggleBtn = document.getElementById('blockedModelsCollapseToggle');
-      if (toggleBtn && typeof toggleBtn.focus === 'function') {
-        toggleBtn.focus();
-      }
-    });
-  }
-
-  if (pickerCollapse && typeof pickerCollapse.addEventListener === 'function') {
-    pickerCollapse.addEventListener('click', (ev) => {
-      let sel =
-        typeof ev.target.closest === 'function'
-          ? ev.target.closest('[data-mp-sort]')
-          : null;
-      if (!sel || sel.tagName !== 'BUTTON') {
-        return;
-      }
-      ev.preventDefault();
-      let mkRaw = sel.getAttribute('data-mp-sort');
-      if (mkRaw === null || mkRaw === '' || mkRaw === 'default') {
-        MP.blockedModelsPickerSort = 'default';
-      } else {
-        MP.blockedModelsPickerSort = mkRaw;
-      }
-      refreshBlockedModelsSortButtonLabel();
-      let sortToggle = document.getElementById('blockedModelsSortByBtn');
-      if (
-        sortToggle &&
-        typeof bootstrap !== 'undefined' &&
-        bootstrap.Dropdown
-      ) {
-        let dd = bootstrap.Dropdown.getInstance(sortToggle);
-        if (dd) {
-          dd.hide();
+    result.backends ||= {};
+    result.backends.openrouter ||= { baseurl: 'https://openrouter.ai', timeout: 60 };
+    result.backends.openaiapi ||= { baseurl: 'http://localhost:11434', timeout: 120 };
+    result.instructions ||= {};
+    result.instructions.custom ||= {};
+    for (const key of ['blockedModels', 'favoritedModels']) {
+        result[key] ||= {};
+        for (const backend of MP_BACKENDS) {
+            result[key][backend] = [...new Set((result[key][backend] || []).filter(id => typeof id === 'string' && id.trim()))];
         }
-      }
-      rebuildBlockedModelPickerDom();
-    });
-    pickerCollapse.addEventListener('shown.bs.collapse', () => {
-      refreshBlockedModelsSortButtonLabel();
-      rebuildBlockedModelPickerDom();
-    });
-    pickerCollapse.addEventListener('hidden.bs.collapse', () => {
-      let fi = document.getElementById('blockedModelsFilterInput');
-      if (fi) {
-        fi.value = '';
-      }
-      refreshBlockedModelsUI();
-    });
-  }
+    }
+    for (const backend of MP_BACKENDS) {
+        result.favoritedModels[backend] = result.favoritedModels[backend].filter(id => !result.blockedModels[backend].includes(id));
+    }
+    return result;
 }
 
-/**
- * Loads settings from the backend
- * @returns {Promise<Object>} Settings object
- * @throws {Error} If settings cannot be loaded
- */
 async function loadSettings() {
-  try {
-    const response = await new Promise((resolve, reject) => {
-        genericRequest('GetMagicPromptSettings', {}, (data) => {
-        if (data.success) {
-          const serverSettings = data.settings;
-          // Create settings object preserving server values
-          const settings = {
-            // Core settings
-            backend: serverSettings.backend || 'ollama',
-            model: serverSettings.model || '',
-            visionbackend:
-              serverSettings.visionbackend ||
-              serverSettings.backend ||
-              'ollama',
-            visionmodel: serverSettings.visionmodel || '',
-            linkChatAndVisionModels:
-              serverSettings.linkChatAndVisionModels !== false, // Default to true if not set
-            blockedModels: normalizeModelIdMapFromServer(
-              serverSettings.blockedModels
-            ),
-            favoritedModels: normalizeModelIdMapFromServer(
-              serverSettings.favoritedModels
-            ),
-            // Backends - merge using spread operator which does a "deep merge" of two objects
-            backends: {
-              ...MP.settings.backends, // Start with default endpoints
-              ...(serverSettings.backends || {}), // Overlay server settings
-            },
-            // Instructions - ensure we get the proper values from the server
-            instructions: {
-              chat: '',
-              vision: '',
-              caption: '',
-              prompt: '',
-              randomprompt: '',
-              custom: {},
-              featureMap: { ...DEFAULT_FEATURE_MAPPINGS },
-            },
-          };
-          // Handle the instructions specifically to ensure all types are properly loaded
-          if (serverSettings.instructions) {
-            // Explicitly handle each instruction type
-            if (typeof serverSettings.instructions.chat === 'string') {
-              settings.instructions.chat = serverSettings.instructions.chat;
-            }
-            
-            if (typeof serverSettings.instructions.vision === 'string') {
-              settings.instructions.vision = serverSettings.instructions.vision;
-            }
-
-            if (typeof serverSettings.instructions.caption === 'string') {
-              settings.instructions.caption =
-                serverSettings.instructions.caption;
-            }
-            if (typeof serverSettings.instructions.prompt === 'string') {
-              settings.instructions.prompt = serverSettings.instructions.prompt;
-            }
-            if (typeof serverSettings.instructions.randomprompt === 'string') {
-              settings.instructions.randomprompt = serverSettings.instructions.randomprompt;
-            }
-            // Handle any custom instructions
-            if (serverSettings.instructions.custom) {
-              settings.instructions.custom = serverSettings.instructions.custom;
-            }
-            // Handle feature mappings
-            if (serverSettings.instructions.featureMap) {
-              settings.instructions.featureMap = {
-                ...DEFAULT_FEATURE_MAPPINGS,
-                ...serverSettings.instructions.featureMap,
-              };
-            }
-          }
-          MP.settings = settings;
-          resolve(settings);
-        } else {
-          const error = new Error(data.error || 'Failed to load settings');
-          console.error('Settings load error:', error);
-          reject(error);
-        }
-      });
-    });
-    return response;
-  } catch (error) {
-    console.error('Settings load error:', error);
-    throw error;
-  }
+    MP.settings = mpNormalizeSettings((await mpRequest('GetMagicPromptSettings')).settings);
+    MP.settingsLoaded = true;
+    return MP.settings;
 }
 
-/**
- * Saves current settings to the backend
- * @param {boolean} [skipFeatureMappings=false] - If true, don't reload feature mappings from UI
- * @returns {Promise<void>}
- */
-async function saveSettings(skipFeatureMappings = false) {
-  try {
-    // Check if models are linked
-    const isLinked = document.getElementById('linkModelsToggle')?.checked;
-    // Get the selected backends
-    const selectedChatBackend = document.querySelector(
-      'input[name="llmBackend"]:checked'
-    );
-    const selectedVisionBackend = document.querySelector(
-      'input[name="visionBackendSelect"]:checked'
-    );
-    // Extract backend IDs
-    const chatBackendId = selectedChatBackend
-      ? selectedChatBackend.id.replace('LLMBtn', '').toLowerCase()
-      : MP.settings.backend;
-    // If linked, use chat backend for vision too
-    const visionBackendId = isLinked
-      ? chatBackendId
-      : selectedVisionBackend
-      ? selectedVisionBackend.id.replace('VisionBtn', '').toLowerCase()
-      : MP.settings.visionbackend;
-    // Get models and use chat model for vision if linked
-    const chatModel =
-      document.getElementById('modelSelect')?.value || MP.settings.model;
-    const visionModel = isLinked
-      ? chatModel
-      : document.getElementById('visionModel')?.value ||
-        MP.settings.visionmodel;
-    // Get base URLs
-    const chatBaseUrl =
-      document.getElementById('backendUrl')?.value ||
-      MP.settings.backends[chatBackendId]?.baseurl;
-    const visionBaseUrl = isLinked
-      ? chatBaseUrl
-      : document.getElementById('visionBackendUrl')?.value ||
-        MP.settings.backends[visionBackendId]?.baseurl;
-    // Save feature mappings if not skipped
-    if (!skipFeatureMappings) {
-      saveFeatureMappingsFromUI();
+/** Serialize writes so rapid preference edits cannot arrive out of order. */
+function mpPersistSettings(settings) {
+    const snapshot = JSON.parse(JSON.stringify(settings));
+    const pending = mpSaveQueue.catch(() => {}).then(() => mpRequest('SaveMagicPromptSettings', { settings: snapshot }));
+    mpSaveQueue = pending;
+    return pending;
+}
+
+function mpSettingsStatus(message, error = false) {
+    const status = document.getElementById('mpSettingsStatus');
+    if (status) {
+        status.textContent = message;
+        status.classList.toggle('mp-status-error', error);
     }
-    const chatTimeout = parseInt(document.getElementById('chatTimeout')?.value, 10);
-    const visionTimeout = isLinked
-      ? chatTimeout
-      : parseInt(document.getElementById('visionTimeout')?.value, 10);
-    // Create settings object matching exact structure expected by C# DefaultSettings
-    const settings = {
-      // Core settings
-      backend: chatBackendId,
-      model: chatModel,
-      visionbackend: visionBackendId,
-      visionmodel: visionModel,
-      linkChatAndVisionModels: isLinked,
-      backends: {
-        ...MP.settings.backends,
-        [chatBackendId]: {
-          ...MP.settings.backends[chatBackendId],
-          baseurl: chatBaseUrl,
-          unloadmodel: document.getElementById('unload_models_toggle')?.checked,
-          timeout: !isNaN(chatTimeout) && chatTimeout >= 0 ? chatTimeout : MP.settings.backends[chatBackendId]?.timeout,
-        },
-        [visionBackendId]: {
-          ...MP.settings.backends[visionBackendId],
-          baseurl: visionBaseUrl,
-          unloadmodel: document.getElementById('unload_models_toggle')?.checked,
-          timeout: !isNaN(visionTimeout) && visionTimeout >= 0 ? visionTimeout : MP.settings.backends[visionBackendId]?.timeout,
-        },
-      },
-      instructions: MP.settings.instructions,
-      blockedModels: cloneModelIdMapForSave(MP.settings.blockedModels),
-      favoritedModels: cloneModelIdMapForSave(MP.settings.favoritedModels),
-    };
-    // Update MP.settings with the new values
-    MP.settings = settings;
-    // Create request payload with settings properly wrapped
-    const payload = {
-      settings,
-    };
-    // Use genericRequest which will automatically add session_id
-    genericRequest('SaveMagicPromptSettings', payload, (data) => {
-        if (data.success) {
-          console.log('Settings saved successfully');
-          updateModelListOnLeft();
-        } else {
-          console.error(
-            `Failed to save settings: ${data.error || 'Unknown error'}`
-          );
-          // showError(`Failed to save settings: ${data.error || 'Unknown error'}`);
-        }
-      },
-      0, // depth
-      (error) => {
-        console.error('Error saving settings:', error);
-        // showError(`Error saving settings: ${error}`);
-      }
-    );
-  } catch (error) {
-    console.error('Error in saveSettings:', error);
-    // showError(`Error in saveSettings: ${error.message}`);
-  }
 }
 
-/**
- * Resets settings to defaults
- * @returns {Promise<void>}
- */
-async function resetSettings() {
-  try {
-    if (
-      !confirm(
-        'This will reset all settings to defaults. Any custom API keys and custom instructions will be cleared. Are you sure?'
-      )
-    ) {
-      return;
-    }
-    const response = await new Promise((resolve, reject) => {
-      genericRequest('ResetMagicPromptSettings', {}, (response) => {
-        if (response.success) {
-          resolve(response);
-        } else {
-          reject(new Error(response.error || 'Failed to reset settings'));
-        }
-      });
-    });
-    MP.settings = response.settings;
-    // Ensure feature mappings are set to defaults
-    if (!MP.settings.instructions.featureMap) {
-      MP.settings.instructions.featureMap = { ...DEFAULT_FEATURE_MAPPINGS };
-    }
-    await fetchModels();
-    // Reset UI elements
-    initInstructionsUI();
-    renderCustomInstructionsList();
-    populateFeatureSelects();
-    closeSettingsModal();
-  } catch (error) {
-    console.error('Settings reset error:', error);
-    // showError(`Failed to reset settings: ${error.message}`);
-  }
-}
+function mpCurrentSettings() { return mpSettingsDraft || MP.settings; }
+function mpModelSelectOptionText(row) { return `${row.name || row.model}${row.costOut ? ` · ${row.costOut} / 1M out` : ''}`; }
+function mpCatalogKey(settings) { return `${settings.backend}\n${settings.backends[settings.backend]?.baseurl || ''}`; }
+function mpCatalog(settings = mpCurrentSettings()) { return MP.modelCatalogs?.[mpCatalogKey(settings)] || []; }
 
-/**
- * Fetches available models from the backend
- * @returns {Promise<Object>} Object containing the fetched models
- */
-async function fetchModels() {
-  const modelSelect = document.getElementById('modelSelect');
-  const visionModelSelect = document.getElementById('visionModel');
-
-  if (!modelSelect || !visionModelSelect) {
-    console.error('Model select elements not found');
-    return Promise.reject(new Error('Model select elements not found'));
-  }
-
-  // Clear existing models when starting a new fetch
-  modelSelect.innerHTML = '';
-  visionModelSelect.innerHTML = '';
-
-  // Add loading options
-  const loadingOption = new Option('Loading models...', '');
-  loadingOption.disabled = true;
-  modelSelect.add(loadingOption.cloneNode(true));
-  visionModelSelect.add(loadingOption.cloneNode(true));
-
-  // Create a request semaphore
-  if (MP.fetchingModels) {
-    return MP.fetchingModelsPromise;
-  }
-
-  try {
-    MP.fetchingModels = true;
-    MP.fetchingModelsPromise = (async () => {
-      // Use the currently set backend values from MP.settings
-      const chatBackendId = MP.settings.backend || 'ollama';
-      const visionBackendId = MP.settings.visionbackend || 'ollama';
-
-      // Fetch models for both backends
-      const response = await new Promise((resolve, reject) => {
-        genericRequest(
-          'GetMagicPromptModels',
-          {
-            backend: chatBackendId,
-            visionbackend: visionBackendId,
-            backends: {
-              [chatBackendId]: {
-                baseurl: MP.settings.backends[chatBackendId]?.baseurl || '',
-              },
-              [visionBackendId]: {
-                baseurl: MP.settings.backends[visionBackendId]?.baseurl || '',
-              },
-            },
-          },
-          (data) => {
-            if (data.success) {
-              resolve(data);
-            } else {
-              reject(new Error(data.error || 'Failed to fetch models'));
-            }
-          },
-          0,
-          (err) => {
-            console.error('Error fetching models:', err);
-            reject(new Error(err?.message || 'Failed to fetch models'));
-          }
-        );
-      });
-
-      // Clear existing models
-      modelSelect.innerHTML = '';
-      visionModelSelect.innerHTML = '';
-
-      MP.cachedChatModelsByBackend = MP.cachedChatModelsByBackend || {};
-
-      // Add chat models (cache full list; dropdown omits blocked)
-      if (Array.isArray(response.models)) {
-        MP.cachedChatModelsByBackend[chatBackendId] = response.models.slice();
-        reapplyChatModelSelectFromCachedCatalog();
-      }
-
-      // Add vision models
-      if (Array.isArray(response.visionmodels)) {
-        const existingVisionModelIds = new Set();
-        const defaultOption = new Option('-- Select a vision model --', '');
-        visionModelSelect.add(defaultOption);
-
-        response.visionmodels.forEach((model) => {
-          if (!model.model || existingVisionModelIds.has(model.model)) {
-            if (!model.model) {
-              console.warn('Vision model missing model field:', model);
-            }
-            return;
-          }
-          existingVisionModelIds.add(model.model);
-          let option = new Option(
-            mpModelSelectOptionText(model),
-            model.model
-          );
-          visionModelSelect.add(option);
-        });
-
-        if (MP.settings.visionmodel) {
-          setModelIfExists(visionModelSelect, MP.settings.visionmodel);
-        }
-      }
-
-      refreshBlockedModelsUI();
-
-      return response;
-    })();
-
-    return await MP.fetchingModelsPromise;
-  } catch (error) {
-    console.error('Error fetching models:', error);
-
-    // Clear and show error state in dropdowns
-    modelSelect.innerHTML = '';
-    visionModelSelect.innerHTML = '';
-
-    const errorOption = new Option(
-      'Error loading models - Check URL and try again',
-      ''
-    );
-    errorOption.disabled = true;
-    modelSelect.add(errorOption.cloneNode(true));
-    visionModelSelect.add(errorOption.cloneNode(true));
-
-    return Promise.reject(error);
-  } finally {
-    // Clear semaphore
-    MP.fetchingModels = false;
-    MP.fetchingModelsPromise = null;
-  }
-}
-
-function updateModelListOnLeft(preserveSelection = false) {
-  try {
-    const modelSelect = document.getElementById('modelSelect');
-    const enhanceInstructions = getInstructionsForCategory('prompt');
-    const listOfModels = document.getElementById('input_mpmodelid');
-    const listOfInstructions = document.getElementById('input_mpinstructions');
-
-    if (!modelSelect || !listOfModels || !listOfInstructions) {
-      console.warn('Could not sync MP List of Models: source or destination select not found');
-      return;
-    }
-
-    if (
-      typeof listOfModels.classList !== 'undefined' &&
-      !listOfModels.classList.contains('mp-model-select-with-cost')
-    ) {
-      listOfModels.classList.add('mp-model-select-with-cost');
-    }
-
-    const previousModelValue = listOfModels.value;
-    const previousModelOption = Array.from(listOfModels.options)
-      .find((opt) => opt.value === previousModelValue);
-    listOfModels.innerHTML = '';
-    Array.from(modelSelect.options).forEach(opt => {
-      if (preserveSelection && opt.dataset.blocked === '1' && opt.value !== previousModelValue) {
-        return;
-      }
-      const option = new Option(opt.text, opt.value);
-      if (opt.dataset && opt.dataset.favorited === '1') {
-        option.dataset.favorited = '1';
-      }
-      if (opt.dataset && opt.dataset.blocked === '1') {
-        option.dataset.blocked = '1';
-      }
-      listOfModels.add(option);
-    });
-
-    // Preserve the prior instruction selection across rebuilds — instructions
-    // have no separate source-of-truth element, so wiping and re-adding the
-    // options here would otherwise drop the user's choice back to the first
-    // option whenever the model list refreshes (e.g. when blocking a model).
-    const previousInstructionValue = listOfInstructions.value;
-    listOfInstructions.innerHTML = '';
-    enhanceInstructions.forEach(instruction => {
-      const option = new Option(instruction.title, instruction.id);
-      listOfInstructions.add(option);
-    });
-    if (previousInstructionValue) {
-      const stillAvailable = Array.from(listOfInstructions.options)
-        .some((o) => o.value === previousInstructionValue);
-      if (stillAvailable) {
-        listOfInstructions.value = previousInstructionValue;
-      }
-    }
-
-    // Mirror current selection unless a preference edit preserved the main
-    // selection. A blocked selection needs an option to retain its value.
-    let targetModelValue = modelSelect.value || '';
-    if (preserveSelection && previousModelValue) {
-      const stillAvailable = Array.from(listOfModels.options)
-        .some((o) => o.value === previousModelValue);
-      if (stillAvailable) {
-        targetModelValue = previousModelValue;
-      } else {
-        const backendId = MP.settings.backend || getSelectedChatBackendIdFromDom();
-        const blocked = (MP.settings.blockedModels && MP.settings.blockedModels[backendId]) || [];
-        const catalog = MP.cachedChatModelsByBackend && MP.cachedChatModelsByBackend[backendId];
-        if (blocked.includes(previousModelValue) && Array.isArray(catalog) &&
-            catalog.some((row) => row && row.model === previousModelValue)) {
-          const option = new Option(
-            previousModelOption ? previousModelOption.text : previousModelValue,
-            previousModelValue
-          );
-          option.dataset.blocked = '1';
-          listOfModels.add(option);
-          targetModelValue = previousModelValue;
-        }
-      }
-    }
-    listOfModels.value = targetModelValue;
-    triggerChangeFor(listOfModels);
-    triggerChangeFor(listOfInstructions);
-  } catch (error) {
-    console.error(error.message);
-  }
-}
-
-/**
- * Sets model selection if it exists in options
- * @private
- * @param {HTMLSelectElement} select - Select element
- * @param {string} modelId - Model ID to select
- */
-function setModelIfExists(select, modelId) {
-  const modelExists = Array.from(select.options).some(
-    (opt) => opt.value === modelId
-  );
-  if (modelExists) {
-    select.value = modelId;
-  }
-}
-
-/**
- * Gets the instruction content for a specified instruction type
- * @param {string} type - The instruction type (e.g., 'chat', 'vision', or a custom ID)
- * @returns {string} The instruction content
- */
-function getInstructionContent(type) {
-  if (!type) {
-    return '';
-  }
-  // Handle built-in instruction types
-   if (
-    type === 'chat' ||
-    type === 'vision' ||
-    type === 'caption' ||
-    type === 'prompt' ||
-    type === 'randomprompt'
-  ) {
-    return MP.settings.instructions[type] || '';
-  }
-  // Handle custom instruction types
-  if (MP.settings.instructions?.custom?.[type]) {
-    const customInstruction = MP.settings.instructions.custom[type];
-    if (customInstruction?.deleted === true) return '';
-    return typeof customInstruction === 'object'
-      ? customInstruction.content || ''
-      : customInstruction || '';
-  }
-  return '';
-}
-
-/**
- * Gets the instruction type to use for a specific feature
- * @param {string} feature - The feature name (e.g., 'enhance-prompt', 'chat-mode')
- * @returns {string} The instruction type to use
- */
-function getInstructionForFeature(feature) {
-  if (!feature || !MP.settings.instructions?.featureMap) {
-    return null;
-  }
-  const instructionType = MP.settings.instructions.featureMap[feature];
-  return instructionType || null;
-}
-
-/**
- * Sets which instruction to use for a specific feature
- * @param {string} feature - The feature name
- * @param {string} instructionType - The instruction type to use
- * @param {boolean} [skipSave=false] - If true, don't call saveSettings() to prevent infinite loops
- */
-function setInstructionForFeature(feature, instructionType, skipSave = false) {
-  if (!feature) return;
-
-  if (!MP.settings.instructions.featureMap) {
-    MP.settings.instructions.featureMap = { ...DEFAULT_FEATURE_MAPPINGS };
-  }
-  MP.settings.instructions.featureMap[feature] = instructionType;
-  if (!skipSave) {
-    saveSettings();
-  }
-}
-
-/**
- * Gets all instructions available for a specific category
- * @param {string} category - The category ('chat', 'vision', 'caption', 'prompt')
- * @returns {Array} Array of instruction objects with id and title
- */
-function getInstructionsForCategory(category) {
-  if (!category) return [];
-  const instructions = [];
-  // Add the built-in instruction for this category
-  if (
-    category === 'chat' ||
-    category === 'vision' ||
-    category === 'caption' ||
-    category === 'prompt'
-  ) {
-    instructions.push({
-      id: category,
-      title: getCategoryTitle(category),
-      isBuiltIn: true,
-    });
-  }
-  // Add custom instructions that work with this category
-  if (MP.settings.instructions?.custom) {
-    Object.entries(MP.settings.instructions.custom).forEach(
-      ([id, instruction]) => {
-        if (instruction?.deleted === true) return;
-        // Handle both string and object formats
-        if (typeof instruction === 'object') {
-          if (
-            instruction.categories &&
-            instruction.categories.includes(category)
-          ) {
-            instructions.push({
-              id,
-              title: instruction.title || id,
-              isBuiltIn: false,
-            });
-          }
-        }
-      }
-    );
-  }
-  return instructions;
-}
-
-/**
- * Gets a human-readable title for a category
- * @param {string} category - Category name
- * @returns {string} Human-readable title
- */
-function getCategoryTitle(category) {
-  switch (category) {
-    case 'chat':
-      return 'Chat (Default)';
-    case 'vision':
-      return 'Vision (Default)';
-    case 'caption':
-      return 'Caption (Default)';
-    case 'prompt':
-      return 'Enhance Prompt (Default)';
-    default:
-      return category.charAt(0).toUpperCase() + category.slice(1);
-  }
-}
-
-/**
- * Populates the feature select dropdowns with available instructions
- */
-function populateFeatureSelects() {
-  const features = [
-    { id: 'enhance-prompt', category: 'prompt' },
-    { id: 'magic-vision', category: 'caption' },
-    { id: 'chat-mode', category: 'chat' },
-    { id: 'vision-mode', category: 'vision' },
-    { id: 'caption', category: 'caption' },
-  ];
-  features.forEach((feature) => {
-    const select = document.getElementById(`feature-${feature.id}`);
-    if (!select) return;
-    // Clear existing options
-    select.innerHTML = '';
-    // Get available instructions for this category
-    const instructions = getInstructionsForCategory(feature.category);
-    // Add options to select
-    instructions.forEach((instruction) => {
-      const option = document.createElement('option');
-      option.value = instruction.id;
-      option.textContent = instruction.title;
-      select.appendChild(option);
-    });
-    // Set current selection
-    const currentMapping = getInstructionForFeature(feature.id);
-    if (
-      currentMapping &&
-      select.querySelector(`option[value="${currentMapping}"]`)
-    ) {
-      select.value = currentMapping;
-    } else {
-      // Default to the category name if no mapping or mapping not found
-      select.value = feature.category;
-    }
-  });
-}
-
-/**
- * Saves the feature mappings from the UI selects
- */
-function saveFeatureMappingsFromUI() {
-  const features = [
-    'enhance-prompt',
-    'magic-vision',
-    'chat-mode',
-    'vision-mode',
-    'caption',
-  ];
-  features.forEach((feature) => {
-    const select = document.getElementById(`feature-${feature}`);
-    if (select && select.value) {
-      setInstructionForFeature(feature, select.value, true); // Pass true to skipSave
-    }
-  });
-  // Save settings after updating all feature mappings
-  saveSettings(true); // Pass true to skipFeatureMappings to prevent recursion
-}
-
-/**
- * Adds a new custom instruction
- * @param {Object} data - Instruction data
- * @returns {string} The ID of the new instruction
- */
-function addCustomInstruction(data) {
-  const id = data.id || `custom-${Date.now()}`;
-  const categories = Array.isArray(data.categories)
-    ? data.categories
-    : typeof data.categories === 'string'
-    ? [data.categories]
-    : [];
-  // Create the instruction object and add to settings
-  const instruction = {
-    id,
-    title: data.title || 'Custom Instruction',
-    content: data.content || '',
-    tooltip: data.tooltip || `Custom instructions for ${data.title}`,
-    categories,
-    created: data.created || new Date().toISOString(),
-    updated: new Date().toISOString(),
-  };
-  if (!MP.settings.instructions.custom) {
-    MP.settings.instructions.custom = {};
-  }
-  MP.settings.instructions.custom[id] = instruction;
-  saveSettings();
-  addCustomInstructionToUI(id, instruction);
-  window.mpRefreshInstructionPrefixes?.();
-  return id;
-}
-
-/**
- * Updates an existing custom instruction
- * @param {string} id - Instruction ID
- * @param {Object} data - Updated instruction data
- * @returns {boolean} Success status
- */
-function updateCustomInstruction(id, data) {
-  if (!MP.settings.instructions?.custom?.[id]) {
-    console.error(`Custom instruction "${id}" not found`);
-    return false;
-  }
-  const instruction = MP.settings.instructions.custom[id];
-  if (data.title) instruction.title = data.title;
-  if (data.content !== undefined) instruction.content = data.content;
-  if (data.tooltip) instruction.tooltip = data.tooltip;
-  if (data.categories) {
-    instruction.categories = Array.isArray(data.categories)
-      ? data.categories
-      : typeof data.categories === 'string'
-      ? [data.categories]
-      : instruction.categories;
-  }
-  instruction.updated = new Date().toISOString();
-  updateCustomInstructionInUI(id);
-  populateFeatureSelects();
-  saveSettings();
-  window.mpRefreshInstructionPrefixes?.();
-  return true;
-}
-
-/**
- * Deletes a custom instruction
- * @param {string} id - Instruction ID
- * @returns {boolean} Success status
- */
-function deleteCustomInstruction(id) {
-  if (!MP.settings.instructions?.custom?.[id]) {
-    console.error(`Custom instruction "${id}" not found`);
-    return false;
-  }
-  MP.settings.instructions.custom[id] = {
-    deleted: true,
-    deletedAt: new Date().toISOString(),
-  };
-  // Handle feature mappings as before
-  if (MP.settings.instructions.featureMap) {
-    Object.entries(MP.settings.instructions.featureMap).forEach(
-      ([feature, instructionId]) => {
-        if (instructionId === id) {
-          const categoryForFeature = DEFAULT_FEATURE_MAPPINGS[feature];
-          MP.settings.instructions.featureMap[feature] = categoryForFeature;
-        }
-      }
-    );
-  }
-  // Update UI and save
-  removeCustomInstructionFromUI(id);
-  populateFeatureSelects();
-  saveSettings();
-  window.mpRefreshInstructionPrefixes?.();
-  return true;
-}
-
-/**
- * Adds a custom instruction to the UI
- * @param {string} id - Instruction ID
- * @param {Object} instruction - Instruction data
- */
-function addCustomInstructionToUI(id, instruction) {
-  const instructionTypeGroup = document.getElementById('instructionTypeGroup');
-  if (instructionTypeGroup) {
-    if (document.getElementById(`${id}InstructionBtn`)) {
-      return updateCustomInstructionInUI(id);
-    }
-    // Create radio button for custom instruction
-    const radio = document.createElement('input');
-    radio.type = 'radio';
-    radio.className = 'btn-check';
-    radio.name = 'instructionType';
-    radio.id = `${id}InstructionBtn`;
-    // Create label for radio button
-    const label = document.createElement('label');
-    label.className = 'btn btn-outline-primary instruction-type-btn';
-    label.htmlFor = radio.id;
-    label.textContent = instruction.title;
-    instructionTypeGroup.appendChild(radio);
-    instructionTypeGroup.appendChild(label);
-    // Add to instruction types for UI updating
-    instructionTypes[id] = {
-      title: instruction.title,
-      tooltip: instruction.tooltip,
-      helpText: `Custom instructions for ${instruction.categories.join(', ')}`,
-      placeholder: `Enter custom instructions for ${instruction.title}`,
-    };
-    radio.addEventListener('change', handleInstructionChange);
-  }
-  renderCustomInstructionsList();
-}
-
-/**
- * Updates an existing custom instruction in the UI
- * @param {string} id - Instruction ID
- */
-function updateCustomInstructionInUI(id) {
-  if (!MP.settings.instructions?.custom?.[id]) return;
-  const instruction = MP.settings.instructions.custom[id];
-  // Update radio button label
-  const label = document.querySelector(`label[for="${id}InstructionBtn"]`);
-  if (label) {
-    label.textContent = instruction.title;
-  }
-  // Update instruction types object
-  if (instructionTypes[id]) {
-    instructionTypes[id].title = instruction.title;
-    instructionTypes[id].tooltip = instruction.tooltip;
-    instructionTypes[
-      id
-    ].helpText = `Custom instructions for ${instruction.categories.join(', ')}`;
-    instructionTypes[
-      id
-    ].placeholder = `Enter custom instructions for ${instruction.title}`;
-  }
-  // Refresh custom instructions list
-  renderCustomInstructionsList();
-}
-
-/**
- * Removes a custom instruction from the UI
- * @param {string} id - Instruction ID
- */
-function removeCustomInstructionFromUI(id) {
-  // Remove radio button
-  const radio = document.getElementById(`${id}InstructionBtn`);
-  if (radio) {
-    radio.remove();
-  }
-  // Remove label
-  const label = document.querySelector(`label[for="${id}InstructionBtn"]`);
-  if (label) {
-    label.remove();
-  }
-  // Remove from instruction types
-  if (instructionTypes[id]) {
-    delete instructionTypes[id];
-  }
-  // Refresh custom instructions list
-  renderCustomInstructionsList();
-}
-
-/**
- * Renders the list of custom instructions in the management section
- */
-function renderCustomInstructionsList() {
-  const container = document.getElementById('customInstructionsList');
-  const noInstructionsMsg = document.getElementById('noCustomInstructionsMsg');
-  if (!container) return;
-  // Clear existing items (except the "no instructions" message)
-  Array.from(container.children).forEach((child) => {
-    if (child.id !== 'noCustomInstructionsMsg') {
-      child.remove();
-    }
-  });
-  const customInstructions = MP.settings.instructions?.custom || {};
-  const instructionCount = Object.keys(customInstructions).length;
-  // Show/hide the "no instructions" message
-  if (noInstructionsMsg) {
-    noInstructionsMsg.style.display = instructionCount > 0 ? 'none' : 'block';
-  }
-  if (instructionCount === 0) return;
-  const template = document.getElementById('customInstructionItemTemplate');
-  Object.entries(customInstructions).forEach(([id, instruction]) => {
-    if (template) {
-      // Use the template if available
-      const clone = template.content.cloneNode(true);
-      const item = clone.querySelector('.custom-instruction-item');
-      item.dataset.id = id;
-      const titleElem = item.querySelector('.custom-instruction-title');
-      if (titleElem) titleElem.textContent = instruction.title || id;
-      const categoriesElem = item.querySelector(
-        '.custom-instruction-categories'
-      );
-      if (
-        categoriesElem &&
-        instruction.categories &&
-        instruction.categories.length > 0
-      ) {
-        instruction.categories.forEach((category) => {
-          const categorySpan = document.createElement('span');
-          categorySpan.className = 'custom-instruction-category';
-          categorySpan.textContent = category;
-          categoriesElem.appendChild(categorySpan);
-        });
-      }
-      const exportBtn = item.querySelector('.custom-instruction-action.export');
-      const editBtn = item.querySelector('.custom-instruction-action.edit');
-      const deleteBtn = item.querySelector('.custom-instruction-action.delete');
-      if (exportBtn) {
-        exportBtn.addEventListener('click', () => exportInstruction(id));
-      }
-      if (editBtn) {
-        editBtn.addEventListener('click', () => showEditInstructionModal(id));
-      }
-      if (deleteBtn) {
-        deleteBtn.addEventListener('click', () => showDeleteConfirmation(id));
-      }
-      container.appendChild(item);
-    } else {
-      // Fallback if template not available
-      const item = document.createElement('div');
-      item.className = 'custom-instruction-item';
-      item.dataset.id = id;
-      const info = document.createElement('div');
-      info.className = 'custom-instruction-info';
-      const title = document.createElement('div');
-      title.className = 'custom-instruction-title';
-      title.textContent = instruction.title || id;
-      info.appendChild(title);
-      if (instruction.categories && instruction.categories.length > 0) {
-        const categoriesContainer = document.createElement('div');
-        categoriesContainer.className = 'custom-instruction-categories';
-        instruction.categories.forEach((category) => {
-          const categorySpan = document.createElement('span');
-          categorySpan.className = 'custom-instruction-category';
-          categorySpan.textContent = category;
-          categoriesContainer.appendChild(categorySpan);
-        });
-        info.appendChild(categoriesContainer);
-      }
-      const actions = document.createElement('div');
-      actions.className = 'custom-instruction-actions';
-      // Export button
-      const exportBtn = document.createElement('button');
-      exportBtn.className = 'custom-instruction-action export';
-      exportBtn.innerHTML = '<i class="fas fa-download"></i>';
-      exportBtn.title = 'Export';
-      exportBtn.addEventListener('click', () => exportInstruction(id));
-      actions.appendChild(exportBtn);
-      // Edit button
-      const editBtn = document.createElement('button');
-      editBtn.className = 'custom-instruction-action edit';
-      editBtn.innerHTML = '<i class="fas fa-edit"></i>';
-      editBtn.title = 'Edit';
-      editBtn.addEventListener('click', () => showEditInstructionModal(id));
-      actions.appendChild(editBtn);
-      // Delete button
-      const deleteBtn = document.createElement('button');
-      deleteBtn.className = 'custom-instruction-action delete';
-      deleteBtn.innerHTML = '<i class="fas fa-trash"></i>';
-      deleteBtn.title = 'Delete';
-      deleteBtn.addEventListener('click', () => showDeleteConfirmation(id));
-      actions.appendChild(deleteBtn);
-      item.appendChild(info);
-      item.appendChild(actions);
-      container.appendChild(item);
-    }
-  });
-}
-
-/**
- * Shows the custom instruction modal for creating or editing
- * @param {string|null} id - Instruction ID (null for new instructions)
- */
-function showCustomInstructionModal(id = null) {
-  // Get modal elements
-  const modal = document.getElementById('customInstructionModal');
-  const title = modal.querySelector('.modal-title');
-  const form = document.getElementById('customInstructionForm');
-  const idInput = document.getElementById('instructionId');
-  const titleInput = document.getElementById('instructionTitle');
-  const tooltipInput = document.getElementById('instructionTooltip');
-  const contentTextarea = document.getElementById('instructionContent');
-  const saveBtn = document.getElementById('saveCustomInstructionBtn');
-  // Reset form fields
-  form.reset();
-  // Set manual entry mode by default
-  document.getElementById('manualEntryBtn').checked = true;
-  // Clear generated content fields
-  const generatedContent = document.getElementById(
-    'generatedInstructionContent'
-  );
-  if (generatedContent) {
-    generatedContent.value = '';
-  }
-  const resultElement = document.querySelector('.ai-generation-result');
-  if (resultElement) {
-    resultElement.style.display = 'none';
-  }
-  const statusElement = document.querySelector('.ai-generation-status');
-  if (statusElement) {
-    statusElement.style.display = 'none';
-  }
-  // Show manual entry fields, hide AI generation fields
-  document.getElementById('manualEntryFields').style.display = 'block';
-  document.getElementById('aiGenerationFields').style.display = 'none';
-  // Show save button, hide generate button
-  saveBtn.style.display = 'block';
-  document.getElementById('generateWithAIBtn').style.display = 'none';
-  // Clear category checkboxes to ensure no old values are carried over
-  const categoryCheckboxes = form.querySelectorAll(
-    'input[name="instructionCategory"]'
-  );
-  categoryCheckboxes.forEach((checkbox) => {
-    checkbox.checked = false;
-  });
-  if (id) {
-    const instruction = MP.settings.instructions?.custom?.[id];
-    if (!instruction) {
-      console.error(`Custom instruction "${id}" not found`);
-      return;
-    }
-    title.textContent = 'Edit Custom Instruction';
-    idInput.value = id;
-    titleInput.value = instruction.title || '';
-    tooltipInput.value = instruction.tooltip || '';
-    contentTextarea.value = instruction.content || '';
-    if (Array.isArray(instruction.categories)) {
-      instruction.categories.forEach((category) => {
-        const checkbox = form.querySelector(
-          `input[name="instructionCategory"][value="${category}"]`
-        );
-        if (checkbox) {
-          checkbox.checked = true;
-        }
-      });
-    }
-  } else {
-    title.textContent = 'Add Custom Instruction'; // Add new instruction
-    idInput.value = '';
-  }
-  // Show modal and initialize creation mode toggle
-  const bootstrapModal = new bootstrap.Modal(modal);
-  bootstrapModal.show();
-  // Initialize the toggle functionality
-  toggleInstructionCreationMode();
-  // Set up save button handler
-  if (saveBtn) {
-    const newSaveBtn = saveBtn.cloneNode(true);
-    saveBtn.parentNode.replaceChild(newSaveBtn, saveBtn);
-    newSaveBtn.addEventListener('click', saveCustomInstructionFromForm);
-  }
-}
-
-/**
- * Shows delete confirmation modal
- * @param {string} id - Instruction ID to delete
- */
-function showDeleteConfirmation(id) {
-  if (!id || !MP.settings.instructions?.custom?.[id]) return;
-  const modal = document.getElementById('confirmDeleteModal');
-  const confirmBtn = document.getElementById('confirmDeleteBtn');
-  if (!modal || !confirmBtn) return;
-  // Create new button to remove old event listeners
-  const newConfirmBtn = confirmBtn.cloneNode(true);
-  confirmBtn.parentNode.replaceChild(newConfirmBtn, confirmBtn);
-  newConfirmBtn.addEventListener('click', () => {
-    deleteCustomInstruction(id);
-    bootstrap.Modal.getInstance(modal).hide();
-  });
-  const bootstrapModal = new bootstrap.Modal(modal);
-  bootstrapModal.show();
-}
-
-/**
- * Handles toggling between manual entry and AI generation
- */
-function toggleInstructionCreationMode() {
-  const manualEntryBtn = document.getElementById('manualEntryBtn');
-  const aiGenerateBtn = document.getElementById('aiGenerateBtn');
-  const manualEntryFields = document.getElementById('manualEntryFields');
-  const aiGenerationFields = document.getElementById('aiGenerationFields');
-  const generateWithAIBtn = document.getElementById('generateWithAIBtn');
-  const saveCustomInstructionBtn = document.getElementById(
-    'saveCustomInstructionBtn'
-  );
-  // Setup event listeners for the toggle buttons
-  manualEntryBtn.addEventListener('change', updateDisplayMode);
-  aiGenerateBtn.addEventListener('change', updateDisplayMode);
-  // Generate button handler
-  generateWithAIBtn.addEventListener('click', generateInstructionWithAI);
-  // Regenerate button handler
-  document
-    .getElementById('regenerateInstructionBtn')
-    ?.addEventListener('click', regenerateInstruction);
-
-  function updateDisplayMode() {
-    if (manualEntryBtn.checked) {
-      // Show manual entry, hide AI generation
-      manualEntryFields.style.display = 'block';
-      aiGenerationFields.style.display = 'none';
-      generateWithAIBtn.style.display = 'none';
-      saveCustomInstructionBtn.style.display = 'block';
-    } else if (aiGenerateBtn.checked) {
-      // Show AI generation, hide manual entry
-      manualEntryFields.style.display = 'none';
-      aiGenerationFields.style.display = 'block';
-      // Check if we already have generated content
-      const generatedContent = document.getElementById(
-        'generatedInstructionContent'
-      );
-      if (generatedContent && generatedContent.value.trim()) {
-        document.querySelector('.ai-generation-result').style.display = 'block';
-        generateWithAIBtn.style.display = 'none';
-      } else {
-        document.querySelector('.ai-generation-result').style.display = 'none';
-        generateWithAIBtn.style.display = 'block';
-      }
-      document.querySelector('.ai-generation-status').style.display = 'none';
-    }
-  }
-  // Initialize display
-  updateDisplayMode();
-}
-
-/**
- * Generate instruction using AI based on user description
- */
-async function generateInstructionWithAI() {
-  const descriptionTextarea = document.getElementById('aiPromptDescription');
-  const description = descriptionTextarea.value.trim();
-  if (!description) {
-    console.error(
-      'Please enter a description of what you want the instruction to accomplish'
-    );
-    alert(
-      'Please enter a description of what you want the instruction to accomplish'
-    );
-    return;
-  }
-  // Get selected categories to determine how the AI will create the instructions
-  const selectedCategories = Array.from(
-    document.querySelectorAll('input[name="instructionCategory"]:checked')
-  ).map((checkbox) => checkbox.value);
-  if (selectedCategories.length === 0) {
-    console.error('Please select at least one category');
-    alert('Please select at least one category');
-    return;
-  }
-  try {
-    // Show generating status using an animation
-    const statusElement = document.querySelector('.ai-generation-status');
-    const resultElement = document.querySelector('.ai-generation-result');
-    const generateButton = document.getElementById('generateWithAIBtn');
-    const saveButton = document.getElementById('saveCustomInstructionBtn');
-    statusElement.style.display = 'block';
-    resultElement.style.display = 'none';
-    generateButton.disabled = true;
-    saveButton.disabled = true;
-    // Create enhanced prompt for the AI
-    const prompt = `
-          I need you to create a SYSTEM PROMPT that will be given to an AI language model.
-
-          This system prompt should be based on this description:
-          "${description}"
-  
-          For these categories: ${selectedCategories.join(', ')}
-  
-          Category purposes:
-          - Chat category: The AI responds to general user questions and conversations
-          - Vision category: The AI analyzes uploaded images and provides descriptions
-          - Caption category: The AI generates Stable Diffusion prompts from images
-          - Prompt category: The AI enhances user text into detailed image generation prompts
-  
-          IMPORTANT: A system prompt is a set of instructions GIVEN TO AN AI, not instructions for humans.
-          It should be written in second person ("You are...", "Your goal is...") addressing the AI directly.
-  
-          Your response must contain ONLY the system prompt text itself with no bullet points, headings, or explanations.
-          Bad example: "System Prompt: You are an AI that..."
-          Good example: "You are an AI that..."
-        `;
-    // Make API request using the current LLM backend
-    const payload = MP.RequestBuilder.createRequestPayload(
-      prompt,
-      null,
-      'generate-instruction'
-    );
-    const response = await MP.APIClient.makeRequest(payload);
-    // Hide status, show result
-    statusElement.style.display = 'none';
-    generateButton.disabled = false;
-    saveButton.disabled = false;
-    if (response.success && response.response) {
-      // Update the generated content textarea
-      const generatedContent = document.getElementById(
-        'generatedInstructionContent'
-      );
-      generatedContent.value = response.response.trim();
-      // Also update the hidden instructionContent field that will be used for saving
-      const instructionContent = document.getElementById('instructionContent');
-      instructionContent.value = response.response.trim();
-      // Show the result section
-      resultElement.style.display = 'block';
-      generateButton.style.display = 'none';
-      saveButton.style.display = 'block';
-    } else {
-      throw new Error(response.error || 'Failed to generate instruction');
-    }
-  } catch (error) {
-    console.error('Instruction generation error:', error);
-    alert(`Failed to generate instruction: ${error.message}`);
-    // Reset UI
-    document.querySelector('.ai-generation-status').style.display = 'none';
-    document.getElementById('generateWithAIBtn').disabled = false;
-    document.getElementById('saveCustomInstructionBtn').disabled = false;
-  }
-}
-
-/**
- * Regenerate the instruction with a new AI call
- */
-function regenerateInstruction() {
-  // Clear the generated content
-  document.getElementById('generatedInstructionContent').value = '';
-  // Hide result section
-  document.querySelector('.ai-generation-result').style.display = 'none';
-  // Show generate button
-  document.getElementById('generateWithAIBtn').style.display = 'block';
-  // Generate new instruction
-  generateInstructionWithAI();
-}
-
-/**
- * Saves a custom instruction from the form data
- */
-function saveCustomInstructionFromForm() {
-  const form = document.getElementById('customInstructionForm');
-  const idInput = document.getElementById('instructionId');
-  const titleInput = document.getElementById('instructionTitle');
-  const tooltipInput = document.getElementById('instructionTooltip');
-  // Get content based on selected mode
-  let contentValue = '';
-  if (document.getElementById('manualEntryBtn').checked) {
-    contentValue = document.getElementById('instructionContent').value.trim();
-  } else {
-    contentValue = document
-      .getElementById('generatedInstructionContent')
-      .value.trim();
-  }
-  if (!form || !titleInput) {
-    console.error('Form elements not found');
-    return;
-  }
-  // Validate required fields (trim to remove whitespace)
-  if (!titleInput.value.trim()) {
-    alert('Please enter a title for the instruction');
-    titleInput.focus();
-    return;
-  }
-  if (!contentValue) {
-    if (document.getElementById('manualEntryBtn').checked) {
-      alert('Please enter instruction content');
-      document.getElementById('instructionContent').focus();
-    } else {
-      alert('Please generate instruction content first');
-      document.getElementById('generateWithAIBtn').focus();
-    }
-    return;
-  }
-  const categoryCheckboxes = form.querySelectorAll(
-    'input[name="instructionCategory"]:checked'
-  );
-  if (categoryCheckboxes.length === 0) {
-    alert('Please select at least one category');
-    return;
-  }
-  const categories = Array.from(categoryCheckboxes).map(
-    (checkbox) => checkbox.value
-  );
-  const data = {
-    title: titleInput.value.trim(),
-    content: contentValue,
-    tooltip: tooltipInput.value.trim(),
-    categories,
-  };
-  const id = idInput.value; // Get ID (if editing)
-  if (id) {
-    updateCustomInstruction(id, data);
-  } else {
-    addCustomInstruction(data);
-  }
-  populateFeatureSelects(); // Refresh feature selects
-  const modal = document.getElementById('customInstructionModal');
-  bootstrap.Modal.getInstance(modal).hide();
-}
-
-/**
- * Exports a single custom instruction as a JSON file
- * @param {string} id - Instruction ID to export
- */
-function exportInstruction(id) {
-  if (!id || !MP.settings.instructions?.custom?.[id]) {
-    console.error(`Custom instruction "${id}" not found`);
-    return;
-  }
-  const instruction = MP.settings.instructions.custom[id];
-  const exportData = {
-    [id]: instruction
-  };
-  // Create JSON blob and trigger download
-  const json = JSON.stringify(exportData, null, 2);
-  const blob = new Blob([json], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `instruction-${instruction.title || id}.json`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a); // Clean up
-  URL.revokeObjectURL(url);
-}
-
-/**
- * Deletes all custom instructions after confirmation
- */
-function deleteAllInstructions() {
-  const customInstructions = MP.settings.instructions?.custom || {};
-  const instructionEntries = Object.entries(customInstructions).filter(
-    ([_, instruction]) => !instruction?.deleted
-  );
-
-  if (instructionEntries.length === 0) {
-    alert('No custom instructions to delete.');
-    return;
-  }
-
-  const count = instructionEntries.length;
-  if (!confirm(`Are you sure you want to delete all ${count} custom instruction${count !== 1 ? 's' : ''}?\n\nThis action cannot be undone.`)) {
-    return;
-  }
-
-  // Delete each instruction
-  instructionEntries.forEach(([id]) => {
-    deleteCustomInstruction(id);
-  });
-
-  alert(`Successfully deleted ${count} custom instruction${count !== 1 ? 's' : ''}.`);
-}
-
-/**
- * Exports all custom instructions as a JSON file
- */
-function exportAllInstructions() {
-  const customInstructions = MP.settings.instructions?.custom || {};
-  const instructionEntries = Object.entries(customInstructions).filter(
-    ([_, instruction]) => !instruction?.deleted
-  );
-
-  if (instructionEntries.length === 0) {
-    alert('No custom instructions to export.');
-    return;
-  }
-
-  // Create export object keyed by instruction ID
-  const exportData = {};
-  instructionEntries.forEach(([id, instruction]) => {
-    exportData[id] = instruction;
-  });
-
-  // Create JSON blob and trigger download
-  const json = JSON.stringify(exportData, null, 2);
-  const blob = new Blob([json], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  const timestamp = new Date().toISOString().slice(0, 10);
-  a.download = `magicprompt-instructions-${timestamp}.json`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
-
-/**
- * Imports custom instructions from a JSON file
- * Expected format: { "id": { id, title, content, tooltip, categories, ... } }
- * @param {File} file - JSON file to import
- */
-function importCustomInstructions(file) {
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = (e) => {
+async function fetchModels(settings = mpCurrentSettings()) {
+    const key = mpCatalogKey(settings);
+    const request = ++mpCatalogRequest;
+    mpSettingsStatus('Loading models…');
     try {
-      const data = JSON.parse(e.target.result);
-      let imported = 0;
-      let skipped = 0;
-      Object.entries(data).forEach(([id, instruction]) => {
-        if (!instruction.title || !instruction.content) {
-          console.warn(`Skipping invalid instruction: ${id}`);
-          skipped++;
-          return;
-        }
-        // Generate new ID to avoid conflicts and mark as imported
-        const newId = `custom-${Date.now()}-${imported}`;
-        addCustomInstruction({
-          id: newId,
-          title: instruction.title,
-          content: instruction.content,
-          tooltip: instruction.tooltip,
-          categories: instruction.categories || [],
+        const response = await mpRequest('GetMagicPromptModels', {
+            backend: settings.backend, baseurl: settings.backends[settings.backend]?.baseurl || ''
         });
-        imported++;
-      });
-      alert(
-        `Successfully imported ${imported} custom instructions${
-          skipped > 0 ? ` (${skipped} skipped)` : ''
-        }`
-      );
-      populateFeatureSelects(); // Refresh feature selects
-    } catch (error) {
-      console.error('Error importing instructions:', error);
-      alert(`Error importing instructions: ${error.message}`);
-    }
-  };
-  reader.readAsText(file);
-}
-
-/**
- * Shows the edit modal for a custom instruction
- * @param {string} id - The ID of the instruction to edit
- */
-function showEditInstructionModal(id) {
-  if (!id || !MP.settings.instructions?.custom?.[id]) {
-    console.error(`Custom instruction "${id}" not found`);
-    return;
-  }
-  // Call the existing showCustomInstructionModal function with the ID
-  showCustomInstructionModal(id);
-}
-
-/**
- * Initialize instructions UI with radio buttons and a single textarea
- * Manages switching between different instruction types
- */
-function initInstructionsUI() {
-  // Get references to elements
-  const instructionTypeRadios = document.querySelectorAll(
-    'input[name="instructionType"]'
-  );
-  const instructionTextarea = document.getElementById('instructionTextarea');
-  const instructionLabel = document.getElementById('instructionLabel');
-  const instructionHelpText = document.getElementById('instructionHelpText');
-  if (!instructionTextarea || !instructionLabel || !instructionHelpText) {
-    console.error('Instruction UI elements not found');
-    return;
-  }
-  window.instructionTypes = {
-    chat: {
-      title: 'Chat Instructions',
-      tooltip:
-        "Instructions for how the AI should behave in chat conversations. These define the AI's personality and response style.",
-      helpText: 'Define how the AI should behave in chat conversations',
-      placeholder: "Configure the AI's chat personality and behavior",
-    },
-    vision: {
-      title: 'Vision Instructions',
-      tooltip:
-        'Instructions for how the AI should analyze and describe images in the vision tab. These instructions are used when discussing images.',
-      helpText: 'Guide how the AI analyzes and describes images',
-      placeholder: 'Configure how the AI should analyze and describe images',
-    },
-    caption: {
-      title: 'Image Caption Instructions',
-      tooltip:
-        "Instructions for how the AI should generate image captions. These instructions are used when clicking the 'Caption' button in the vision tab.",
-      helpText: 'Define how the AI generates captions for images',
-      placeholder: 'Configure how the AI should generate image captions',
-    },
-    prompt: {
-      title: 'Enhance Prompt Instructions',
-      tooltip:
-        "Instructions for how the AI should format text-to-image prompts when generating images. These instructions are used when clicking 'Enhance Prompt' in the generate tab.",
-      helpText:
-        'These instructions guide how the AI formats and enhances prompts',
-      placeholder: 'How do you want the AI to Enhance your prompt?',
-    },
-  };
-  // Add custom instructions from saved user settings
-  if (MP.settings.instructions?.custom) {
-    Object.entries(MP.settings.instructions.custom).forEach(
-      ([id, instruction]) => {
-        addCustomInstructionToUI(id, instruction); // Add to radio buttons and instruction types
-        instructionTypes[id] = {
-          title: instruction.title || id,
-          tooltip:
-            instruction.tooltip ||
-            `Custom instructions for ${instruction.title || id}`,
-          helpText: `Custom instructions for ${
-            Array.isArray(instruction.categories)
-              ? instruction.categories.join(', ')
-              : 'custom use'
-          }`,
-          placeholder: `Enter custom instructions for ${
-            instruction.title || id
-          }`,
-        };
-      }
-    );
-  }
-
-  // Update the instruction UI based on selected type
-  function updateInstructionUI(type) {
-    const typeConfig = instructionTypes[type];
-    if (!typeConfig) {
-      console.error(`Instruction type "${type}" not found`);
-      return;
-    }
-    // Update the label, tooltip, and help text
-    if (instructionLabel) {
-      let textNode = Array.from(instructionLabel.childNodes).find(
-        (node) => node.nodeType === Node.TEXT_NODE
-      );
-      if (!textNode) {
-        textNode = document.createTextNode('');
-        instructionLabel.insertBefore(textNode, instructionLabel.firstChild);
-      }
-      textNode.nodeValue = typeConfig.title + ' ';
-      const tooltipIcon = instructionLabel.querySelector('i');
-      if (tooltipIcon) {
-        tooltipIcon.setAttribute('title', typeConfig.tooltip);
-        tooltipIcon.setAttribute('data-bs-original-title', typeConfig.tooltip);
-        // Refresh the tooltip if Bootstrap's tooltip is initialized
-        if (typeof bootstrap !== 'undefined' && bootstrap.Tooltip) {
-          const tooltip = bootstrap.Tooltip.getInstance(tooltipIcon);
-          if (tooltip) {
-            tooltip.dispose();
-          }
-          new bootstrap.Tooltip(tooltipIcon);
+        MP.modelCatalogs ||= {};
+        MP.modelCatalogs[key] = (response.models || []).filter(row => row && row.model);
+        if (request === mpCatalogRequest && key === mpCatalogKey(mpCurrentSettings())) {
+            renderModelSettings();
+            mpSettingsStatus(`${response.models.length} models available.`);
         }
-      }
+        if (key === mpCatalogKey(MP.settings)) updateModelListOnLeft(true);
+        return response;
     }
-    if (instructionHelpText) {
-      instructionHelpText.textContent = typeConfig.helpText;
+    catch (error) {
+        if (request === mpCatalogRequest) mpSettingsStatus(`Could not load models: ${error.message}`, true);
+        throw error;
     }
-    if (instructionTextarea) {
-      instructionTextarea.placeholder = typeConfig.placeholder;
-      const value = getInstructionContent(type);
-      // Set the textarea value and force a refresh
-      instructionTextarea.value = value;
-      setTimeout(() => {
-        const event = new Event('input', { bubbles: true });
-        instructionTextarea.dispatchEvent(event);
-      }, 0);
-    }
-  }
-
-  // Function to handle radio button changes
-  function handleInstructionChange(e) {
-    if (e.target.checked) {
-      // Only save content if the textarea exists
-      if (instructionTextarea) {
-        const currentType = Array.from(instructionTypeRadios)
-          .find((r) => r.checked && r !== e.target)
-          ?.id.replace('InstructionBtn', '')
-          .toLowerCase();
-        if (currentType) {
-          saveCurrentInstructionContent(currentType);
-        }
-      }
-      const type = e.target.id.replace('InstructionBtn', '').toLowerCase();
-      updateInstructionUI(type);
-    }
-  }
-
-  // Function to save the current instruction content
-  function saveCurrentInstructionContent(specificType) {
-    if (!instructionTextarea) return;
-    const selectedType =
-      specificType ||
-      Array.from(instructionTypeRadios)
-        .find((r) => r.checked)
-        ?.id.replace('InstructionBtn', '')
-        .toLowerCase();
-    if (!selectedType) return;
-    if (
-      selectedType === 'chat' ||
-      selectedType === 'vision' ||
-      selectedType === 'caption' ||
-      selectedType === 'prompt'
-    ) {
-      // Only save if the content has actually changed
-      if (
-        MP.settings.instructions[selectedType] !== instructionTextarea.value
-      ) {
-        MP.settings.instructions[selectedType] = instructionTextarea.value;
-      }
-    } else if (MP.settings.instructions?.custom) {
-      // This is a custom instruction so we need to ensure the object exists
-      if (!MP.settings.instructions.custom[selectedType]) {
-        MP.settings.instructions.custom[selectedType] = {};
-      }
-      const currentContent =
-        typeof MP.settings.instructions.custom[selectedType] === 'object'
-          ? MP.settings.instructions.custom[selectedType].content || ''
-          : MP.settings.instructions.custom[selectedType] || '';
-      // Only save if changed
-      if (currentContent !== instructionTextarea.value) {
-        if (typeof MP.settings.instructions.custom[selectedType] === 'object') {
-          MP.settings.instructions.custom[selectedType].content =
-            instructionTextarea.value;
-        } else {
-          MP.settings.instructions.custom[selectedType] =
-            instructionTextarea.value;
-        }
-      }
-    }
-  }
-  // Save the current instruction when it changes
-  if (instructionTextarea) {
-    // Use a debounced approach to avoid excessive saves
-    let saveTimeout = null;
-    instructionTextarea.addEventListener('input', () => {
-      // Clear any pending save
-      if (saveTimeout) {
-        clearTimeout(saveTimeout);
-      }
-      // Set a new timeout to save after typing stops
-      saveTimeout = setTimeout(() => {
-        const selectedType = Array.from(instructionTypeRadios)
-          .find((r) => r.checked)
-          ?.id.replace('InstructionBtn', '')
-          .toLowerCase();
-        if (selectedType) {
-          saveCurrentInstructionContent(selectedType);
-        }
-        saveTimeout = null;
-      }, 500); // Wait 500ms after typing stops
-    });
-  }
-  instructionTypeRadios.forEach((radio) => {
-    radio.addEventListener('change', handleInstructionChange);
-  });
-  // Ensure instructions are properly initialized
-  if (!MP.settings.instructions) {
-    MP.settings.instructions = {
-      chat: '',
-      vision: '',
-      caption: '',
-      prompt: '',
-      custom: {},
-      featureMap: { ...DEFAULT_FEATURE_MAPPINGS },
-    };
-  }
-  // Initialize with the selected instruction type (default to chat)
-  const selectedType =
-    Array.from(instructionTypeRadios)
-      .find((r) => r.checked)
-      ?.id.replace('InstructionBtn', '')
-      .toLowerCase() || 'chat';
-  // Make sure the correct radio button is checked
-  const selectedRadio = document.getElementById(
-    `${selectedType}InstructionBtn`
-  );
-  if (selectedRadio) {
-    selectedRadio.checked = true;
-  }
-  updateInstructionUI(selectedType);
-  renderCustomInstructionsList();
-  populateFeatureSelects();
-  // Set up instruction management buttons
-  const addCustomInstructionBtn = document.getElementById(
-    'addCustomInstructionBtn'
-  );
-  if (addCustomInstructionBtn) {
-    addCustomInstructionBtn.addEventListener('click', () =>
-      showCustomInstructionModal()
-    );
-  }
-  // Import button - use cloneNode to prevent duplicate event listeners
-  const importInstructionsBtn = document.getElementById(
-    'importInstructionsBtn'
-  );
-  const importInstructionsInput = document.getElementById(
-    'importInstructionsInput'
-  );
-  if (importInstructionsBtn && importInstructionsInput) {
-    const newImportInput = importInstructionsInput.cloneNode(true);
-    importInstructionsInput.parentNode.replaceChild(newImportInput, importInstructionsInput);
-    newImportInput.addEventListener('change', (e) => {
-      if (e.target.files.length > 0) {
-        importCustomInstructions(e.target.files[0]);
-        e.target.value = ''; // Reset input
-      }
-    });
-    const newImportBtn = importInstructionsBtn.cloneNode(true);
-    importInstructionsBtn.parentNode.replaceChild(newImportBtn, importInstructionsBtn);
-    newImportBtn.addEventListener('click', () => {
-      newImportInput.click();
-    });
-  }
-  const exportAllBtn = document.getElementById('exportAllInstructionsBtn');
-  if (exportAllBtn) {
-    const newExportAllBtn = exportAllBtn.cloneNode(true);
-    exportAllBtn.parentNode.replaceChild(newExportAllBtn, exportAllBtn);
-    newExportAllBtn.addEventListener('click', () => exportAllInstructions());
-  }
-  const deleteAllBtn = document.getElementById('deleteAllInstructionsBtn');
-  if (deleteAllBtn) {
-    const newDeleteAllBtn = deleteAllBtn.cloneNode(true);
-    deleteAllBtn.parentNode.replaceChild(newDeleteAllBtn, deleteAllBtn);
-    newDeleteAllBtn.addEventListener('click', () => deleteAllInstructions());
-  }
-  return {
-    updateInstructionUI,
-    saveCurrentInstructionContent,
-    instructionTypes,
-    handleInstructionChange,
-  };
 }
 
-/**
- * Closes the settings modal
- */
-function closeSettingsModal() {
-  try {
-    $('#settingsModal').modal('hide');
-  } catch (error) {
-    console.error('Error closing settings modal:', error);
-  }
-}
-
-/**
- * Initialize instructions tab interface
- */
-function initInstructionsTabInterface() {
-  // Set up tab switching to retain state
-  const tabEl = document.getElementById('instructionsTabNav');
-  if (tabEl) {
-    const triggerTabList = tabEl.querySelectorAll('button');
-    triggerTabList.forEach((triggerEl) => {
-      triggerEl.addEventListener('click', (event) => {
-        event.preventDefault();
-        // Activate this tab
-        const tab = new bootstrap.Tab(triggerEl);
-        tab.show();
-      });
-    });
-  }
-  // Prevent header buttons from triggering collapse
-  document.querySelectorAll('.header-buttons button').forEach((button) => {
-    button.addEventListener('click', (e) => {
-      e.stopPropagation();
-    });
-  });
-  // Initialize auto-resize for textareas
-  const textareas = document.querySelectorAll(
-    '#settingsModal textarea, #customInstructionModal textarea'
-  );
-  textareas.forEach((textarea) => {
-    textarea.addEventListener('input', function () {
-      this.style.height = 'auto';
-      const maxHeight = parseInt(
-        getComputedStyle(this).getPropertyValue('max-height'),
-        10
-      );
-      const scrollHeight = this.scrollHeight;
-      if (scrollHeight <= maxHeight) {
-        this.style.height = scrollHeight + 'px';
-      } else {
-        this.style.height = maxHeight + 'px';
-      }
-    });
-    // Initial resize
-    if (textarea.offsetParent !== null) {
-      // Only process visible textareas
-      textarea.dispatchEvent(new Event('input'));
+/** Preserve explicit generation selections, even if a model was just blocked. */
+function updateModelListOnLeft(preserveSelection = true) {
+    const select = document.getElementById('input_mpmodelid');
+    const instructions = document.getElementById('input_mpinstructions');
+    if (select && mpCatalog(MP.settings).length) {
+        mpFillModelSelect(select, MP.settings, preserveSelection && select.value && select.value !== 'loading' ? select.value : MP.settings.model, preserveSelection);
+        triggerChangeFor(select);
     }
-  });
-  // Initialize the custom instruction modal
-  initCustomInstructionModal();
-  // Replace the saveCustomInstructionBtn event handler with our enhanced version
-  const saveBtn = document.getElementById('saveCustomInstructionBtn');
-  if (saveBtn) {
-    const newSaveBtn = saveBtn.cloneNode(true);
-    saveBtn.parentNode.replaceChild(newSaveBtn, saveBtn);
-    newSaveBtn.addEventListener('click', saveCustomInstructionFromForm);
-  }
+    if (instructions) {
+        const previous = instructions.value;
+        instructions.replaceChildren();
+        for (const [id, instruction] of mpInstructionEntries(MP.settings)) {
+            if (id === 'randomprompt' || id === 'instructiongen') continue;
+            instructions.add(new Option(instruction.title, id));
+        }
+        if ([...instructions.options].some(option => option.value === previous)) instructions.value = previous;
+        triggerChangeFor(instructions);
+    }
 }
 
-/**
- * Initializes settings modal with saved values
- */
+/** OpenRouter catalog dates, newest first; stable ties preserve provider order. */
+function mpCompareModelDates(a, b, backend) {
+    const created = row => Number.isFinite(Number(row.created)) ? Number(row.created) : 0;
+    return backend === 'openrouter' ? created(b) - created(a) : 0;
+}
+
+function mpFillModelSelect(select, settings, selected, preserveBlockedSelection = false) {
+    const backend = settings.backend;
+    const blocked = new Set(settings.blockedModels[backend]);
+    const favorites = new Set(settings.favoritedModels[backend]);
+    if (blocked.has(selected) && !preserveBlockedSelection) selected = '';
+    // OpenRouter's creation timestamp is the date the model was added to its catalog.
+    // Keep favorites pinned, newest first within each group. Stable sorting retains
+    // provider order for equal/missing dates and for local catalogs.
+    const rows = mpCatalog(settings).slice().sort((a, b) =>
+        Number(favorites.has(b.model)) - Number(favorites.has(a.model)) ||
+        mpCompareModelDates(a, b, backend));
+    select.replaceChildren(new Option('Select a model', ''));
+    for (const row of rows) {
+        if (blocked.has(row.model) && row.model !== selected) continue;
+        const option = new Option(mpModelSelectOptionText(row), row.model);
+        if (blocked.has(row.model)) option.dataset.blocked = '1';
+        if (favorites.has(row.model)) option.dataset.favorited = '1';
+        if (select.id === 'modelSelect') {
+            const label = escapeHtmlNoBr(option.text);
+            const favorite = favorites.has(row.model);
+            option.dataset.cleanname = `<span class="mp-model-dropdown-row${favorite ? ' mp-model-dropdown-row-favorited' : ''}"><span class="mp-model-dropdown-row-label">${label}</span><span class="mp-model-dropdown-favorite-marker${favorite ? ' mp-model-dropdown-star-active' : ''}" title="${favorite ? 'Favorited model' : 'Not favorited'}" aria-label="${favorite ? 'Favorited model' : 'Not favorited'}">${favorite ? '★' : '☆'}</span></span>`;
+        }
+        select.add(option);
+    }
+    // A saved ID may be temporarily absent from a provider's catalog.
+    if (selected && selected !== 'loading' && ![...select.options].some(option => option.value === selected)) {
+        select.add(new Option(`${selected} (unavailable)`, selected));
+    }
+    select.value = selected === 'loading' ? '' : selected || '';
+}
+
+function isModelFavoritedForBackend(backend, id) { return MP.settings.favoritedModels?.[backend]?.includes(id) || false; }
+function mpChangeModelPreference(key, backend, id, add) {
+    const list = MP.settings[key][backend];
+    MP.settings[key][backend] = list.filter(value => value !== id);
+    if (add) {
+        MP.settings[key][backend].push(id);
+        const other = key === 'blockedModels' ? 'favoritedModels' : 'blockedModels';
+        MP.settings[other][backend] = MP.settings[other][backend].filter(value => value !== id);
+    }
+    updateModelListOnLeft(true);
+    mpPersistSettings({ blockedModels: MP.settings.blockedModels, favoritedModels: MP.settings.favoritedModels })
+        .catch(error => showError(`Could not save model preferences: ${error.message}`));
+}
+Object.assign(MP, {
+    isModelFavoritedForBackend,
+    blockModelId: (backend, id) => mpChangeModelPreference('blockedModels', backend, id, true),
+    unblockModelId: (backend, id) => mpChangeModelPreference('blockedModels', backend, id, false),
+    favoriteModelId: (backend, id) => mpChangeModelPreference('favoritedModels', backend, id, true),
+    unfavoriteModelId: (backend, id) => mpChangeModelPreference('favoritedModels', backend, id, false)
+});
+
+function mpInstructionEntries(settings = mpCurrentSettings()) {
+    return [
+        ...Object.entries(MP_BUILTINS).map(([id, title]) => [id, { title, content: settings.instructions[id] || '', tooltip: '' }]),
+        ...Object.entries(settings.instructions.custom).filter(([, instruction]) => instruction && !instruction.deleted)
+    ];
+}
+
+function getInstructionContent(id) {
+    return MP.settings.instructions.custom?.[id]?.content ?? MP.settings.instructions[id] ?? '';
+}
+
+/** WhatTheDuck-style preference picker, with its panel inside the modal focus trap. */
+class MPModelPreferencePicker {
+    constructor(select, modal) {
+        this.select = select;
+        this.modal = modal;
+        this.root = document.createElement('div');
+        this.root.className = 'mp-model-picker';
+        this.root.innerHTML = `<div class="mp-model-trigger" role="button" tabindex="0" aria-expanded="false"><span class="mp-model-pills"></span><span class="mp-model-caret">▾</span></div>`;
+        select.after(this.root);
+        this.trigger = this.root.firstElementChild;
+        this.trigger.id = `${select.id}Trigger`;
+        this.trigger.setAttribute('aria-labelledby', `${select.id}Label`);
+        this.panel = document.createElement('div');
+        this.panel.id = `${select.id}Panel`;
+        this.panel.className = 'mp-model-panel mp-model-dropdown-popover';
+        this.panel.hidden = true;
+        this.panel.innerHTML = `<input type="search" class="sui_popover_text_input mp-model-dropdown-search mp-model-filter" placeholder="Search..." aria-label="Filter models" autocomplete="off"><div class="mp-model-list"></div><div class="mp-model-empty" hidden>No matching models.</div><div class="mp-model-actions"><span class="mp-model-count" aria-live="polite"></span><button type="button" class="basic-button">Clear</button></div>`;
+        this.panel.setAttribute('role', 'group');
+        this.panel.setAttribute('aria-labelledby', `${select.id}Label`);
+        this.trigger.setAttribute('aria-controls', this.panel.id);
+        modal.append(this.panel);
+        this.filter = this.panel.querySelector('input');
+        this.list = this.panel.querySelector('.mp-model-list');
+        this.trigger.addEventListener('click', event => {
+            const remove = event.target.closest('[data-remove-model]');
+            if (remove) {
+                this.change([...select.selectedOptions].map(option => option.value).filter(value => value !== remove.dataset.removeModel));
+                this.trigger.focus();
+                return;
+            }
+            const open = this.panel.hidden;
+            mpCloseModelPickers();
+            if (open) {
+                mpCloseSwarmSettingsDropdown();
+                this.panel.hidden = false;
+                this.trigger.setAttribute('aria-expanded', 'true');
+                this.position();
+                this.filter.focus();
+            }
+        });
+        this.trigger.addEventListener('keydown', event => {
+            if (event.target === this.trigger && ['Enter', ' '].includes(event.key)) {
+                event.preventDefault(); this.trigger.click();
+            }
+        });
+        this.filter.addEventListener('input', () => this.applyFilter());
+        this.list.addEventListener('change', () => {
+            this.change([...this.list.querySelectorAll('input:checked')].map(box => box.value));
+        });
+        this.panel.querySelector('button').addEventListener('click', () => this.change([]));
+        document.addEventListener('click', event => {
+            if (!this.root.contains(event.target) && !this.panel.contains(event.target)) this.close();
+        });
+        modal.addEventListener('scroll', () => this.position(), true);
+        window.addEventListener('resize', () => this.position());
+    }
+    close(focus = false) {
+        this.panel.hidden = true;
+        this.trigger.setAttribute('aria-expanded', 'false');
+        if (focus) this.trigger.focus();
+    }
+    change(values) {
+        for (const option of this.select.options) option.selected = values.includes(option.value);
+        triggerChangeFor(this.select);
+    }
+    refresh() {
+        const options = [...this.select.options];
+        const signature = JSON.stringify(options.map(option => [option.value, option.text]));
+        if (signature !== this.signature) {
+            this.signature = signature;
+            this.list.replaceChildren();
+            for (const option of options) {
+                const label = document.createElement('label');
+                label.className = 'sui_popover_model_button mp-model-dropdown-row mp-model-option';
+                const box = document.createElement('input');
+                box.type = 'checkbox'; box.value = option.value;
+                const text = document.createElement('span');
+                text.className = 'mp-model-dropdown-row-label';
+                text.textContent = option.dataset.label || option.text;
+                label.title = option.value;
+                label.append(box, text); this.list.append(label);
+            }
+        }
+        const selected = new Set(options.filter(option => option.selected).map(option => option.value));
+        for (const box of this.list.querySelectorAll('input')) {
+            box.checked = selected.has(box.value);
+            box.closest('label').classList.toggle('sui_popover_model_button_selected', box.checked);
+        }
+        const pills = this.root.querySelector('.mp-model-pills');
+        pills.replaceChildren();
+        for (const option of options.filter(option => option.selected)) {
+            const pill = document.createElement('span');
+            pill.className = 'mp-model-pill'; pill.title = option.text;
+            const text = document.createElement('span'); text.textContent = option.text;
+            const remove = document.createElement('button');
+            remove.type = 'button'; remove.textContent = '×'; remove.dataset.removeModel = option.value;
+            remove.setAttribute('aria-label', `Remove ${option.text}`);
+            pill.append(text, remove); pills.append(pill);
+        }
+        if (!selected.size) {
+            const placeholder = document.createElement('span');
+            placeholder.className = 'mp-model-placeholder'; placeholder.textContent = 'Select models…';
+            pills.append(placeholder);
+        }
+        this.panel.querySelector('.mp-model-count').textContent = `${selected.size} selected`;
+        this.applyFilter(); this.position();
+    }
+    applyFilter() {
+        const query = this.filter.value.trim().toLowerCase();
+        let visible = 0;
+        for (const label of this.list.children) {
+            label.hidden = !`${label.textContent} ${label.querySelector('input').value}`.toLowerCase().includes(query);
+            if (!label.hidden) visible++;
+        }
+        this.panel.querySelector('.mp-model-empty').hidden = visible > 0;
+    }
+    position() {
+        if (this.panel.hidden) return;
+        const rect = this.trigger.getBoundingClientRect();
+        // Portal outside the scrolling body so long preference lists are not clipped.
+        const margin = 8;
+        const below = window.innerHeight - rect.bottom - margin;
+        const above = rect.top - margin;
+        const upward = below < 330 && above > below;
+        const room = Math.max(0, upward ? above : below);
+        Object.assign(this.panel.style, {
+            left: `${rect.left}px`, width: `${rect.width}px`, maxHeight: `${room}px`,
+            top: upward ? 'auto' : `${rect.bottom + 4}px`,
+            bottom: upward ? `${window.innerHeight - rect.top + 4}px` : 'auto'
+        });
+    }
+}
+const mpModelPickers = [];
+function mpCloseModelPickers() { mpModelPickers.forEach(picker => picker.close()); }
+function mpCloseSwarmSettingsDropdown(focus = false) {
+    const popover = typeof uiImprover !== 'undefined' && uiImprover.lastPopover;
+    if (!popover?.popover?.isConnected || !document.getElementById('settingsModal')?.contains(popover.popover)) return false;
+    const select = document.getElementById(popover.popover.id.replace('popover_uiimprover_', ''));
+    popover.remove();
+    if (focus) select?.focus();
+    return true;
+}
+
 function initSettingsModal() {
-  try {
-    // Ensure the instructions object has the correct structure
-    if (!MP.settings.instructions) {
-      MP.settings.instructions = {
-        chat: '',
-        vision: '',
-        caption: '',
-        prompt: '',
-        custom: {},
-        featureMap: { ...DEFAULT_FEATURE_MAPPINGS },
-      };
-    } else {
-      if (!MP.settings.instructions.custom) {
-        MP.settings.instructions.custom = {};
-      }
-      if (!MP.settings.instructions.featureMap) {
-        MP.settings.instructions.featureMap = { ...DEFAULT_FEATURE_MAPPINGS };
-      }
-    }
-    // Initialize the linked models state
-    const isLinked = MP.settings.linkChatAndVisionModels !== false; // Default to true if not set
-    // Set the toggle to match the stored setting
-    const linkModelsToggle = document.getElementById('linkModelsToggle');
-    if (linkModelsToggle) {
-      linkModelsToggle.checked = isLinked;
-      updateLinkedModelsUI(isLinked);
-    }
-    // Select the correct backend based on current settings
-    const currentBackend = MP.settings.backend || 'ollama';
-    const currentBackendRadio = document.getElementById(
-      `${currentBackend}LLMBtn`
-    );
-    if (currentBackendRadio) {
-      currentBackendRadio.checked = true;
-    }
-    updateBaseUrlVisibility(currentBackend, false);
-    const backendUrl = document.getElementById('backendUrl');
-    if (backendUrl) {
-      backendUrl.value = MP.settings.backends[currentBackend]?.baseurl || '';
-    }
-    const chatTimeoutInput = document.getElementById('chatTimeout');
-    if (chatTimeoutInput) {
-      const defaultChatTimeout = currentBackend === 'ollama' || currentBackend === 'openaiapi' ? 120 : 60;
-      chatTimeoutInput.value = MP.settings.backends[currentBackend]?.timeout ?? defaultChatTimeout;
-    }
-    const currentVisionBackend = MP.settings.visionbackend || 'ollama';
-    const currentVisionBackendRadio = document.getElementById(
-      `${currentVisionBackend}VisionBtn`
-    );
-    if (currentVisionBackendRadio) {
-      currentVisionBackendRadio.checked = true;
-    }
-    updateBaseUrlVisibility(currentVisionBackend, true);
-    const visionBackendUrl = document.getElementById('visionBackendUrl');
-    if (visionBackendUrl) {
-      visionBackendUrl.value =
-        MP.settings.backends[currentVisionBackend]?.baseurl || '';
-    }
-    const visionTimeoutInput = document.getElementById('visionTimeout');
-    if (visionTimeoutInput) {
-      const defaultVisionTimeout = currentVisionBackend === 'ollama' || currentVisionBackend === 'openaiapi' ? 120 : 60;
-      visionTimeoutInput.value = MP.settings.backends[currentVisionBackend]?.timeout ?? defaultVisionTimeout;
-    }
-    initInstructionsUI();
-    initInstructionsTabInterface();
-    initBlockedModelsSettingsUi();
-
-    // Show loading state before fetching models
-    const modelSelect = document.getElementById('modelSelect');
-    const visionModelSelect = document.getElementById('visionModel');
-    if (modelSelect) {
-      modelSelect.innerHTML = '';
-      const loadingOption = new Option(
-        `Loading ${currentBackend} models...`,
-        ''
-      );
-      loadingOption.disabled = true;
-      modelSelect.add(loadingOption);
-    }
-    if (visionModelSelect) {
-      visionModelSelect.innerHTML = '';
-      const loadingOption = new Option(
-        `Loading ${currentVisionBackend} vision models...`,
-        ''
-      );
-      loadingOption.disabled = true;
-      visionModelSelect.add(loadingOption);
-    }
-    fetchModels()
-      .then((result) => {
-        console.log('Initial models loaded:', result);
-        updateModelListOnLeft(true);
-      })
-      .catch((error) => {
-        console.error('Error loading initial models:', error);
-        if (modelSelect) {
-          modelSelect.innerHTML = '';
-          const errorOption = new Option('Error loading models', '');
-          errorOption.disabled = true;
-          modelSelect.add(errorOption);
-        }
-        if (visionModelSelect) {
-          visionModelSelect.innerHTML = '';
-          const errorOption = new Option('Error loading vision models', '');
-          errorOption.disabled = true;
-          visionModelSelect.add(errorOption);
-        }
-      });
-    // Add event listeners for chat backend selection
-    const linkingBackendRadios = document.querySelectorAll(
-      'input[name="llmBackend"]'
-    );
-    linkingBackendRadios.forEach((radio) => {
-      radio.addEventListener('change', async (e) => {
-        const backend = e.target.id.replace('LLMBtn', '').toLowerCase();
-        updateBaseUrlVisibility(backend, false);
-        const chatTimeoutInput = document.getElementById('chatTimeout');
-        if (chatTimeoutInput) {
-          const defaultTimeout = backend === 'ollama' || backend === 'openaiapi' ? 120 : 60;
-          chatTimeoutInput.value = MP.settings.backends[backend]?.timeout ?? defaultTimeout;
-        }
-        const modelSelect = document.getElementById('modelSelect');
-        if (modelSelect) {
-          modelSelect.innerHTML = '';
-          const loadingOption = new Option(`Loading ${backend} models...`, '');
-          loadingOption.disabled = true;
-          modelSelect.add(loadingOption);
-        }
-        try {
-          const backendUrl = document.getElementById('backendUrl');
-          const baseUrl = backendUrl ? backendUrl.value : '';
-          MP.settings.backend = backend;
-          if (baseUrl && needsBaseUrl(backend)) {
-            if (!MP.settings.backends[backend]) {
-              MP.settings.backends[backend] = {};
-            }
-            MP.settings.backends[backend].baseurl = baseUrl;
-          }
-          // Save settings with minimal data (just backend)
-          const payload = {
-            settings: {
-              backend: backend,
-              backends: {
-                ...MP.settings.backends,
-              },
-            },
-          };
-          // Use Swarm's built in genericRequest which will automatically add session_id
-          await new Promise((resolve, reject) => {
-            genericRequest('SaveMagicPromptSettings', payload, (data) => {
-                if (data.success) {
-                  resolve();
-                } else {
-                  reject(new Error(data.error || 'Failed to save settings'));
-                }
-              },
-              0,
-              (error) => reject(error)
-            );
-          });
-          await fetchModels();
-          refreshBlockedModelsUI();
-        } catch (error) {
-          console.error(`Error fetching models for ${backend}:`, error);
-          if (modelSelect) {
-            modelSelect.innerHTML = '';
-            const errorOption = new Option(
-              `Error loading models: ${error.message}`,
-              ''
-            );
-            errorOption.disabled = true;
-            modelSelect.add(errorOption);
-          }
-        }
-      });
-    });
-    // Add event listeners for vision backend selection
-    const visionBackendRadios = document.querySelectorAll(
-      'input[name="visionBackendSelect"]'
-    );
-    visionBackendRadios.forEach((radio) => {
-      radio.addEventListener('change', async (e) => {
-        const backend = e.target.id.replace('VisionBtn', '').toLowerCase();
-        updateBaseUrlVisibility(backend, true);
-        const visionTimeoutInput = document.getElementById('visionTimeout');
-        if (visionTimeoutInput) {
-          const defaultTimeout = backend === 'ollama' || backend === 'openaiapi' ? 120 : 60;
-          visionTimeoutInput.value = MP.settings.backends[backend]?.timeout ?? defaultTimeout;
-        }
-        const modelSelect = document.getElementById('visionModel');
-        if (modelSelect) {
-          modelSelect.innerHTML = '';
-          const loadingOption = new Option(
-            `Loading ${backend} vision models...`,
-            ''
-          );
-          loadingOption.disabled = true;
-          modelSelect.add(loadingOption);
-        }
-        try {
-          const backendUrl = document.getElementById('visionBackendUrl');
-          const baseUrl = backendUrl ? backendUrl.value : '';
-          MP.settings.visionbackend = backend;
-          if (baseUrl && needsBaseUrl(backend)) {
-            if (!MP.settings.backends[backend]) {
-              MP.settings.backends[backend] = {};
-            }
-            MP.settings.backends[backend].baseurl = baseUrl;
-          }
-          const payload = {
-            settings: {
-              visionbackend: backend,
-              backends: {
-                ...MP.settings.backends,
-              },
-            },
-          };
-          await new Promise((resolve, reject) => {
-            genericRequest('SaveMagicPromptSettings', payload, (data) => {
-                if (data.success) {
-                  resolve();
-                } else {
-                  reject(new Error(data.error || 'Failed to save settings'));
-                }
-              },
-              0,
-              (error) => reject(error)
-            );
-          });
-          await fetchModels();
-        } catch (error) {
-          console.error(`Error fetching vision models for ${backend}:`, error);
-          if (modelSelect) {
-            modelSelect.innerHTML = '';
-            const errorOption = new Option(
-              `Error loading vision models: ${error.message}`,
-              ''
-            );
-            errorOption.disabled = true;
-            modelSelect.add(errorOption);
-          }
-        }
-      });
-    });
-    // Add event listeners for base URL changes with debounce
-    const backendBaseUrl = document.getElementById('backendUrl');
-    if (backendBaseUrl) {
-      // Create a debounced save function
-      const debouncedSaveUrl = debounce(async function (value) {
-        try {
-          const currentBackend =
-            document
-              .querySelector('input[name="llmBackend"]:checked')
-              ?.id.replace('LLMBtn', '')
-              .toLowerCase() || MP.settings.backend;
-          if (needsBaseUrl(currentBackend)) {
-            // Update settings
-            if (!MP.settings.backends[currentBackend]) {
-              MP.settings.backends[currentBackend] = {};
-            }
-            MP.settings.backends[currentBackend].baseurl = value;
-            // Create minimal payload
-            const payload = {
-              settings: {
-                backends: {
-                  [currentBackend]: {
-                    baseurl: value,
-                  },
-                },
-              },
-            };
-            // Save settings
-            await new Promise((resolve, reject) => {
-              genericRequest('SaveMagicPromptSettings', payload, (data) => {
-                  if (data.success) {
-                    console.log(
-                      `Saved base URL for ${currentBackend}: ${value}`
-                    );
-                    resolve();
-                  } else {
-                    console.error(
-                      `Failed to save base URL: ${
-                        data.error || 'Unknown error'
-                      }`
-                    );
-                    reject(new Error(data.error || 'Failed to save base URL'));
-                  }
-                },
-                0,
-                (error) => {
-                  console.error('Error saving base URL:', error);
-                  reject(error);
-                }
-              );
-            });
-            // Fetch models with new URL
-            await fetchModels();
-          }
-        } catch (error) {
-          console.error('Error saving base URL:', error);
-        }
-      }, 1000); // 1 second debounce
-      // Add input event listener with debounce
-      backendBaseUrl.addEventListener('input', function (e) {
-        // Sync with vision URL when linked
-        if (document.getElementById('linkModelsToggle')?.checked) {
-          const visionBackendUrl = document.getElementById('visionBackendUrl');
-          if (visionBackendUrl) {
-            visionBackendUrl.value = e.target.value;
-          }
-        }
-        // Show loading indication in the model select
-        const modelSelect = document.getElementById('modelSelect');
-        if (modelSelect) {
-          modelSelect.innerHTML = '';
-          const loadingOption = new Option(
-            'URL changed, models will update soon...',
-            ''
-          );
-          loadingOption.disabled = true;
-          modelSelect.add(loadingOption);
-        }
-        // Trigger the debounced save
-        debouncedSaveUrl(e.target.value);
-      });
-    }
-    const chatTimeoutInputEl = document.getElementById('chatTimeout');
-    if (chatTimeoutInputEl) {
-      const debouncedSaveChatTimeout = debounce(async function (value) {
-        try {
-          const currentBackend =
-            document
-              .querySelector('input[name="llmBackend"]:checked')
-              ?.id.replace('LLMBtn', '')
-              .toLowerCase() || MP.settings.backend;
-          const timeoutValue = parseInt(value, 10);
-          if (!isNaN(timeoutValue) && timeoutValue >= 0) {
-            if (!MP.settings.backends[currentBackend]) {
-              MP.settings.backends[currentBackend] = {};
-            }
-            MP.settings.backends[currentBackend].timeout = timeoutValue;
-            const payload = {
-              settings: {
-                backends: {
-                  [currentBackend]: {
-                    timeout: timeoutValue,
-                  },
-                },
-              },
-            };
-            await new Promise((resolve, reject) => {
-              genericRequest('SaveMagicPromptSettings', payload, (data) => {
-                  if (data.success) {
-                    console.log(`Saved timeout for ${currentBackend}: ${timeoutValue}s`);
-                    resolve();
-                  } else {
-                    console.error(`Failed to save timeout: ${data.error || 'Unknown error'}`);
-                    reject(new Error(data.error || 'Failed to save timeout'));
-                  }
-                },
-                0,
-                (error) => {
-                  console.error('Error saving timeout:', error);
-                  reject(error);
-                }
-              );
-            });
-          }
-        } catch (error) {
-          console.error('Error saving chat timeout:', error);
-        }
-      }, 1000);
-      chatTimeoutInputEl.addEventListener('input', function (e) {
-        if (document.getElementById('linkModelsToggle')?.checked) {
-          const visionTimeoutSync = document.getElementById('visionTimeout');
-          if (visionTimeoutSync) {
-            visionTimeoutSync.value = e.target.value;
-          }
-        }
-        debouncedSaveChatTimeout(e.target.value);
-      });
-    }
-
-    // Add event listeners for vision base URL changes with debounce
-    const visionBackendUrlInput = document.getElementById('visionBackendUrl');
-    if (visionBackendUrlInput) {
-      // Create a debounced save function
-      const debouncedSaveVisionUrl = debounce(async function (value) {
-        try {
-          const currentVisionBackend =
-            document
-              .querySelector('input[name="visionBackendSelect"]:checked')
-              ?.id.replace('VisionBtn', '')
-              .toLowerCase() || MP.settings.visionbackend;
-          if (needsBaseUrl(currentVisionBackend)) {
-            // Update settings
-            if (!MP.settings.backends[currentVisionBackend]) {
-              MP.settings.backends[currentVisionBackend] = {};
-            }
-            MP.settings.backends[currentVisionBackend].baseurl = value;
-            // Create minimal payload
-            const payload = {
-              settings: {
-                backends: {
-                  [currentVisionBackend]: {
-                    baseurl: value,
-                  },
-                },
-              },
-            };
-            // Save settings
-            await new Promise((resolve, reject) => {
-              genericRequest('SaveMagicPromptSettings', payload, (data) => {
-                  if (data.success) {
-                    console.log(
-                      `Saved vision base URL for ${currentVisionBackend}: ${value}`
-                    );
-                    resolve();
-                  } else {
-                    console.error(
-                      `Failed to save vision base URL: ${
-                        data.error || 'Unknown error'
-                      }`
-                    );
-                    reject(
-                      new Error(data.error || 'Failed to save vision base URL')
-                    );
-                  }
-                },
-                0,
-                (error) => {
-                  console.error('Error saving vision base URL:', error);
-                  reject(error);
-                }
-              );
-            });
-            // Fetch models with new URL
-            await fetchModels();
-          }
-        } catch (error) {
-          console.error('Error saving vision base URL:', error);
-        }
-      }, 1000); // 1 second debounce
-      // Add input event listener with debounce
-      visionBackendUrlInput.addEventListener('input', function (e) {
-        // Show loading indication in the model select
-        const visionModelSelect = document.getElementById('visionModel');
-        if (visionModelSelect) {
-          visionModelSelect.innerHTML = '';
-          const loadingOption = new Option(
-            'URL changed, models will update soon...',
-            ''
-          );
-          loadingOption.disabled = true;
-          visionModelSelect.add(loadingOption);
-        }
-        // Trigger the debounced save
-        debouncedSaveVisionUrl(e.target.value);
-      });
-    }
-    const visionTimeoutInputModal = document.getElementById('visionTimeout');
-    if (visionTimeoutInputModal) {
-      const debouncedSaveVisionTimeout = debounce(async function (value) {
-        try {
-          const currentVisionBackend =
-            document
-              .querySelector('input[name="visionBackendSelect"]:checked')
-              ?.id.replace('VisionBtn', '')
-              .toLowerCase() || MP.settings.visionbackend;
-          const timeoutValue = parseInt(value, 10);
-          if (!isNaN(timeoutValue) && timeoutValue >= 0) {
-            if (!MP.settings.backends[currentVisionBackend]) {
-              MP.settings.backends[currentVisionBackend] = {};
-            }
-            MP.settings.backends[currentVisionBackend].timeout = timeoutValue;
-            const payload = {
-              settings: {
-                backends: {
-                  [currentVisionBackend]: {
-                    timeout: timeoutValue,
-                  },
-                },
-              },
-            };
-            await new Promise((resolve, reject) => {
-              genericRequest('SaveMagicPromptSettings', payload, (data) => {
-                  if (data.success) {
-                    console.log(`Saved vision timeout for ${currentVisionBackend}: ${timeoutValue}s`);
-                    resolve();
-                  } else {
-                    console.error(`Failed to save vision timeout: ${data.error || 'Unknown error'}`);
-                    reject(new Error(data.error || 'Failed to save vision timeout'));
-                  }
-                },
-                0,
-                (error) => {
-                  console.error('Error saving vision timeout:', error);
-                  reject(error);
-                }
-              );
-            });
-          }
-        } catch (error) {
-          console.error('Error saving vision timeout:', error);
-        }
-      }, 1000);
-      visionTimeoutInputModal.addEventListener('input', function (e) {
-        debouncedSaveVisionTimeout(e.target.value);
-      });
-    }
-    // Add event listener for link models toggle
-    const toggleBtn = document.getElementById('linkModelsToggle');
-    if (toggleBtn) {
-      toggleBtn.addEventListener('change', function (e) {
-        const isLinked = e.target.checked;
-        updateLinkedModelsUI(isLinked);
-      });
-    }
-    // Add event listener for model select change
-    const modelDropdown = document.getElementById('modelSelect');
-    if (modelDropdown) {
-      modelDropdown.addEventListener('change', function (e) {
-        if (document.getElementById('linkModelsToggle')?.checked) {
-          const visionModelSelect = document.getElementById('visionModel');
-          if (visionModelSelect) {
-            visionModelSelect.value = modelDropdown.value;
-          }
-        }
-      });
-    }
-    // Add event listeners for backend selection
-    const linkBackendRadios = document.querySelectorAll(
-      'input[name="llmBackend"]'
-    );
-    linkBackendRadios.forEach((radio) => {
-      radio.addEventListener('change', function (e) {
-        if (document.getElementById('linkModelsToggle')?.checked) {
-          const backend = e.target.id.replace('LLMBtn', '').toLowerCase();
-          const visionBackendRadio = document.getElementById(
-            `${backend}VisionBtn`
-          );
-          if (visionBackendRadio && !visionBackendRadio.checked) {
-            visionBackendRadio.checked = true;
-            const changeEvent = new Event('change');
-            visionBackendRadio.dispatchEvent(changeEvent);
-          }
-        }
-      });
-    });
-  } catch (error) {
-    console.error('Error initializing settings modal:', error);
-    // showError('Error initializing settings modal:', error);
-  }
-}
-
-// Add this function at the end of settings.js
-function showSettingsModal() {
-  try {
+    if (document.getElementById('settingsModal')) return;
+    document.body.insertAdjacentHTML('beforeend', `
+    <div class="modal fade mp-settings" id="settingsModal" tabindex="-1" aria-labelledby="mpSettingsTitle" aria-hidden="true">
+      <div class="modal-dialog modal-dialog-centered"><div class="modal-content">
+        <div class="modal-header"><div><h5 class="modal-title" id="mpSettingsTitle">MagicPrompt</h5><p class="mp-muted">Prompt tools for Generate</p></div>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close settings"></button></div>
+        <div class="mp-settings-tabs" role="tablist" aria-label="Settings sections">
+          <button type="button" role="tab" id="mpTabProvider" aria-controls="mpPanelProvider" aria-selected="true" data-mp-tab="Provider">Provider</button>
+          <button type="button" role="tab" id="mpTabModels" aria-controls="mpPanelModels" aria-selected="false" tabindex="-1" data-mp-tab="Models">Models</button>
+          <button type="button" role="tab" id="mpTabInstructions" aria-controls="mpPanelInstructions" aria-selected="false" tabindex="-1" data-mp-tab="Instructions">Instructions</button>
+        </div>
+        <div class="modal-body">
+          <section id="mpPanelProvider" role="tabpanel" aria-labelledby="mpTabProvider">
+            <h6>Connection</h6><p class="mp-muted">Choose the provider used to rewrite prompts during generation.</p>
+            <label class="mp-field" for="mpBackend">Provider<select id="mpBackend" class="form-select"><option value="openrouter">OpenRouter</option><option value="openaiapi">OpenAI-compatible API (local)</option></select></label>
+            <label class="mp-field" for="mpBaseUrl" id="mpBaseUrlField">Server URL<input class="form-control" id="mpBaseUrl" type="url" placeholder="http://localhost:1234"></label>
+            <label class="mp-field mp-timeout" for="mpTimeout">Timeout (seconds)<input class="form-control" id="mpTimeout" type="number" min="1" max="3600" step="1"></label>
+            <div class="mp-key-note"><strong>API keys</strong><p class="mp-muted">Manage provider keys in SwarmUI’s User settings.</p><button type="button" class="basic-button" id="mpApiKeys">Open API keys</button></div>
+          </section>
+          <section id="mpPanelModels" role="tabpanel" aria-labelledby="mpTabModels" hidden>
+            <div class="mp-section-heading"><div><h6>Model preferences</h6><p class="mp-muted">Favorites appear first. Blocked models stay out of the model list.</p></div><button type="button" class="basic-button" id="mpRefreshModels">Refresh</button></div>
+            <div class="mp-field"><label for="modelSelect">Default model</label><select class="form-select" id="modelSelect"></select></div>
+            <div class="mp-field"><label id="mpFavoriteModelsLabel">Favorited models</label><select id="mpFavoriteModels" multiple hidden></select></div>
+            <div class="mp-field"><label id="mpBlockedModelsLabel">Blocked models</label><select id="mpBlockedModels" multiple hidden></select></div>
+            <p class="mp-muted">Search by model name or ID. Remove a selection to undo a preference. Prices are USD per million output tokens.</p>
+          </section>
+          <section id="mpPanelInstructions" role="tabpanel" aria-labelledby="mpTabInstructions" hidden>
+            <div class="mp-section-heading"><div><h6>Instruction library</h6><p class="mp-muted">Select an instruction to edit its name and system prompt.</p></div><div class="mp-toolbar">
+              <button type="button" class="basic-button" id="mpImport">Import</button><button type="button" class="basic-button" id="mpExportAll">Export all</button><button type="button" class="basic-button mp-primary" id="mpNewInstruction">New instruction</button>
+              <input type="file" id="mpImportFile" accept="application/json,.json" hidden></div></div>
+            <div class="mp-library"><div class="mp-library-sidebar"><label class="visually-hidden" for="mpInstructionSearch">Search instructions</label><input type="search" class="form-control" id="mpInstructionSearch" placeholder="Search instructions"><div id="mpInstructionList" class="mp-instruction-list" aria-label="Instructions"></div></div>
+              <div class="mp-editor"><label class="mp-field" for="mpInstructionTitle">Name<input class="form-control" id="mpInstructionTitle"></label>
+                <label class="mp-field" for="mpInstructionTooltip">Description<input class="form-control" id="mpInstructionTooltip" placeholder="Optional description"></label>
+                <label class="mp-field mp-content-field" for="mpInstructionContent">System prompt<textarea class="form-control" id="mpInstructionContent" rows="12" spellcheck="false"></textarea></label>
+                <div class="mp-toolbar"><button type="button" class="basic-button" id="mpExportInstruction">Export</button><button type="button" class="basic-button mp-danger" id="mpDeleteInstruction">Delete</button></div>
+                <details class="mp-ai-generator"><summary>Draft with AI</summary><label class="mp-field" for="mpInstructionBrief">Describe the instruction<textarea class="form-control" id="mpInstructionBrief" rows="3"></textarea></label><button type="button" class="basic-button" id="mpGenerateInstruction">Generate draft</button><p class="mp-muted">Uses your saved provider and default model. Review the generated text before saving.</p></details>
+              </div></div>
+          </section>
+        </div>
+        <div class="modal-footer"><span id="mpSettingsStatus" role="status" aria-live="polite"></span><button type="button" class="basic-button" data-bs-dismiss="modal">Cancel</button><button type="button" class="basic-button mp-primary" id="mpSaveSettings">Save and close</button></div>
+      </div></div>
+    </div>`);
     const modal = document.getElementById('settingsModal');
-    if (!modal) return;
-    // Check if there's already an instance
-    let modalInstance = bootstrap.Modal.getInstance(modal);
-    // If modal is already visible, do nothing
-    if (modal.classList.contains('show')) {
-      return;
-    }
-    // Initialize modal contents
-    initSettingsModal();
-    // Use existing instance or create a new one
-    if (modalInstance) {
-      modalInstance.show();
-    } else {
-      // Only create a new instance if one doesn't exist
-      modalInstance = new bootstrap.Modal(modal);
-      modalInstance.show();
-    }
-  } catch (error) {
-    console.error('Error showing settings modal:', error);
-  }
-}
-
-/**
- * Updates UI for linked/unlinked chat and vision models
- * @param {boolean} isLinked - Whether models are linked
- */
-function updateLinkedModelsUI(isLinked) {
-  try {
-    // Get UI elements
-    const visionSettingsCard = document.querySelector(
-      '.settings-card:nth-child(2)'
-    );
-    const chatSettingsCard = document.querySelector(
-      '.settings-card:first-child'
-    );
-    const visionContent = document.getElementById('visionSettingsCollapse');
-    const chatContent = document.getElementById('chatSettingsCollapse');
-    const visionHeader = visionSettingsCard?.querySelector(
-      '.settings-section-title'
-    );
-    const chatHeader = chatSettingsCard?.querySelector(
-      '.settings-section-title'
-    );
-    // If elements don't exist, exit early
-    if (!visionSettingsCard || !chatSettingsCard) return;
-    // Get model selects
-    const chatModelSelect = document.getElementById('modelSelect');
-    const visionModelSelect = document.getElementById('visionModel');
-    if (isLinked) {
-      // Update chat settings header to indicate it's linked
-      if (chatHeader) {
-        chatHeader.textContent = 'Chat and Vision Settings (Linked)';
-      }
-      // Hide vision settings section completely
-      visionSettingsCard.style.display = 'none';
-      // Make chat settings always expanded
-      if (chatContent && !chatContent.classList.contains('show')) {
-        chatContent.classList.add('show');
-        const button = chatSettingsCard.querySelector('.collapse-toggle');
-        if (button) button.setAttribute('aria-expanded', 'true');
-      }
-      // Sync vision model with chat model
-      if (chatModelSelect && visionModelSelect) {
-        visionModelSelect.value = chatModelSelect.value;
-      }
-      // Sync vision backend with chat backend
-      const selectedChatBackend = document.querySelector(
-        'input[name="llmBackend"]:checked'
-      );
-      if (selectedChatBackend) {
-        const chatBackendId = selectedChatBackend.id
-          .replace('LLMBtn', '')
-          .toLowerCase();
-        const visionBackendRadio = document.getElementById(
-          `${chatBackendId}VisionBtn`
-        );
-        if (visionBackendRadio) {
-          visionBackendRadio.checked = true;
+    new ResizeObserver(([entry]) => {
+        const width = entry.target.getBoundingClientRect().width;
+        if (width) modal.style.setProperty('--mp-model-menu-width', `${width}px`);
+    }).observe(document.getElementById('modelSelect'));
+    modal.addEventListener('hide.bs.modal', event => { if (mpSettingsBusy) event.preventDefault(); });
+    modal.addEventListener('hidden.bs.modal', () => { mpSettingsDraft = null; });
+    modal.addEventListener('hide.bs.modal', () => { mpCloseModelPickers(); mpCloseSwarmSettingsDropdown(); });
+    modal.addEventListener('shown.bs.modal', () => {
+        mpSettingsOpening = false;
+        if (mpSettingsCloseQueued) closeSettingsModal();
+    });
+    modal.addEventListener('click', event => {
+        if (event.target.closest('[data-bs-dismiss="modal"]')) {
+            event.preventDefault(); event.stopPropagation(); closeSettingsModal();
         }
-      }
-      // Sync base URLs
-      const backendUrl = document.getElementById('backendUrl');
-      const visionBackendUrl = document.getElementById('visionBackendUrl');
-      if (backendUrl && visionBackendUrl) {
-        visionBackendUrl.value = backendUrl.value;
-      }
-    } else {
-      // Restore chat title
-      if (chatHeader) {
-        chatHeader.textContent = 'Chat LLM Settings';
-      }
-      // Show vision settings
-      visionSettingsCard.style.display = 'block';
+    });
+    modal.addEventListener('keydown', event => {
+        if (event.key !== 'Escape') return;
+        const picker = mpModelPickers.find(picker => !picker.panel.hidden);
+        if (picker || mpCloseSwarmSettingsDropdown(true)) {
+            event.preventDefault(); event.stopPropagation();
+            picker?.close(true);
+        }
+        else if (mpSettingsOpening) {
+            event.preventDefault(); event.stopPropagation(); closeSettingsModal();
+        }
+    }, true);
+    modal.querySelectorAll('[data-mp-tab]').forEach(button => {
+        button.addEventListener('click', () => mpSelectSettingsTab(button.dataset.mpTab));
+        button.addEventListener('keydown', event => {
+            if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+            event.preventDefault();
+            const tabs = [...modal.querySelectorAll('[data-mp-tab]')];
+            let index = tabs.indexOf(button);
+            index = event.key === 'Home' ? 0 : event.key === 'End' ? 2 : (index + (event.key === 'ArrowRight' ? 1 : 2)) % 3;
+            tabs[index].click(); tabs[index].focus();
+        });
+    });
+    document.getElementById('mpBackend').addEventListener('change', event => {
+        mpCaptureProvider(false);
+        mpSettingsDraft.backend = event.target.value;
+        mpSettingsDraft.model = '';
+        mpRenderProvider(); renderModelSettings();
+        fetchModels().catch(() => {});
+    });
+    document.getElementById('mpBaseUrl').addEventListener('change', () => { mpCaptureProvider(); renderModelSettings(); });
+    document.getElementById('mpRefreshModels').addEventListener('click', () => { mpCaptureProvider(); fetchModels().catch(() => {}); });
+    document.getElementById('mpSaveSettings').addEventListener('click', saveSettings);
+    document.getElementById('mpApiKeys').addEventListener('click', () => {
+        modal.addEventListener('hidden.bs.modal', () => {
+            document.getElementById('usersettingstabbutton')?.click();
+            document.getElementById('userinfotabbutton')?.click();
+            document.getElementById('api_keys_table')?.scrollIntoView({ block: 'center' });
+        }, { once: true });
+        closeSettingsModal();
+    });
+    document.getElementById('mpInstructionSearch').addEventListener('input', renderInstructionList);
+    document.getElementById('mpNewInstruction').addEventListener('click', () => {
+        mpCaptureInstruction();
+        const id = `custom-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        mpSettingsDraft.instructions.custom[id] = { id, title: 'New instruction', content: '', tooltip: '', categories: ['prompt'], created: new Date().toISOString() };
+        document.getElementById('mpInstructionSearch').value = '';
+        mpEditingInstruction = id; renderInstructionList(); mpRenderInstruction();
+        document.getElementById('mpInstructionTitle').select();
+    });
+    document.getElementById('mpDeleteInstruction').addEventListener('click', () => {
+        const instruction = mpSettingsDraft.instructions.custom[mpEditingInstruction];
+        if (!instruction || !confirm(`Delete “${instruction.title}”? This takes effect when you save settings.`)) return;
+        mpSettingsDraft.instructions.custom[mpEditingInstruction] = { deleted: true };
+        mpEditingInstruction = 'prompt'; renderInstructionList(); mpRenderInstruction();
+    });
+    document.getElementById('mpImport').addEventListener('click', () => document.getElementById('mpImportFile').click());
+    document.getElementById('mpImportFile').addEventListener('change', async event => {
+        try { await importCustomInstructions(event.target.files[0]); }
+        catch (error) { mpSettingsStatus(`Import failed: ${error.message}`, true); }
+        event.target.value = '';
+    });
+    document.getElementById('mpExportAll').addEventListener('click', () => exportInstructions(false));
+    document.getElementById('mpExportInstruction').addEventListener('click', () => exportInstructions(true));
+    document.getElementById('mpGenerateInstruction').addEventListener('click', generateInstructionWithAI);
+    document.getElementById('mpInstructionTitle').addEventListener('input', () => { mpCaptureInstruction(); renderInstructionList(); });
+    // Preferences use the same checkbox-and-pill pattern as WhatTheDuck.
+    for (const [id, key] of [['mpFavoriteModels', 'favoritedModels'], ['mpBlockedModels', 'blockedModels']]) {
+        const select = document.getElementById(id);
+        mpModelPickers.push(new MPModelPreferencePicker(select, modal));
+        select.addEventListener('change', () => {
+            if (!mpSettingsDraft) return;
+            const backend = mpSettingsDraft.backend;
+            const values = [...select.selectedOptions].map(option => option.value);
+            mpSettingsDraft[key][backend] = values;
+            const other = key === 'blockedModels' ? 'favoritedModels' : 'blockedModels';
+            mpSettingsDraft[other][backend] = mpSettingsDraft[other][backend].filter(id => !values.includes(id));
+            renderModelSettings();
+        });
     }
-  } catch (error) {
-    console.error('Error updating linked models UI:', error);
-  }
+    document.getElementById('modelSelect').addEventListener('change', () => {
+        if (mpSettingsDraft) mpSettingsDraft.model = document.getElementById('modelSelect').value;
+    });
 }
 
-// Initialize custom instruction modal
-function initCustomInstructionModal() {
-  const modal = document.getElementById('customInstructionModal');
-  // Set up the creation mode toggle when the modal opens
-  modal.addEventListener('show.bs.modal', () => {
-    // Reset mode to manual entry
-    document.getElementById('manualEntryBtn').checked = true;
-    // Initialize the toggle functionality
-    toggleInstructionCreationMode();
-    // Clear generated content fields
-    const generatedContent = document.getElementById(
-      'generatedInstructionContent'
-    );
-    if (generatedContent) {
-      generatedContent.value = '';
+function mpSelectSettingsTab(name) {
+    mpCloseModelPickers(); mpCloseSwarmSettingsDropdown();
+    const modal = document.getElementById('settingsModal');
+    modal.querySelectorAll('[data-mp-tab]').forEach(button => {
+        const selected = button.dataset.mpTab === name;
+        button.setAttribute('aria-selected', String(selected)); button.tabIndex = selected ? 0 : -1;
+        document.getElementById(`mpPanel${button.dataset.mpTab}`).hidden = !selected;
+    });
+}
+function mpRenderProvider() {
+    const settings = mpSettingsDraft;
+    document.getElementById('mpBackend').value = settings.backend;
+    document.getElementById('mpBaseUrlField').hidden = settings.backend !== 'openaiapi';
+    document.getElementById('mpBaseUrl').value = settings.backends[settings.backend].baseurl;
+    document.getElementById('mpTimeout').value = settings.backends[settings.backend].timeout;
+}
+function mpCaptureProvider(validate = false) {
+    const timeout = document.getElementById('mpTimeout');
+    if (validate && (!timeout.value || !timeout.reportValidity())) throw new Error('Enter a timeout between 1 and 3600 seconds.');
+    const config = mpSettingsDraft.backends[mpSettingsDraft.backend];
+    config.timeout = Number(timeout.value);
+    if (mpSettingsDraft.backend === 'openaiapi') {
+        const url = document.getElementById('mpBaseUrl').value.trim();
+        if (validate && !/^https?:\/\/[^\s]+$/i.test(url)) throw new Error('Enter an HTTP or HTTPS server URL.');
+        config.baseurl = url;
     }
-    const resultElement = document.querySelector('.ai-generation-result');
-    if (resultElement) {
-      resultElement.style.display = 'none';
-    }
-    const statusElement = document.querySelector('.ai-generation-status');
-    if (statusElement) {
-      statusElement.style.display = 'none';
-    }
-  });
 }
 
-// Expose functions to global scope
-if (typeof window !== 'undefined') {
-  window.initSettingsModal = initSettingsModal;
-  window.showSettingsModal = showSettingsModal;
-  window.closeSettingsModal = closeSettingsModal;
-  window.saveSettings = saveSettings;
-  window.resetSettings = resetSettings;
-  window.loadSettings = loadSettings;
-  window.updateLinkedModelsUI = updateLinkedModelsUI;
-  window.getInstructionForFeature = getInstructionForFeature;
-  window.getInstructionContent = getInstructionContent;
-  window.showCustomInstructionModal = showCustomInstructionModal;
-  window.saveCustomInstructionFromForm = saveCustomInstructionFromForm;
-  window.toggleInstructionCreationMode = toggleInstructionCreationMode;
-  window.generateInstructionWithAI = generateInstructionWithAI;
-  window.regenerateInstruction = regenerateInstruction;
-  window.initCustomInstructionModal = initCustomInstructionModal;
-  window.initInstructionsTabInterface = initInstructionsTabInterface;
-  window.handleInstructionChange = function (e) {
-    const instructionTypeRadios = document.querySelectorAll(
-      'input[name="instructionType"]'
-    );
-    const type = e.target.id.replace('InstructionBtn', '').toLowerCase();
-    if (type && instructionTypeRadios) {
-      const ui = initInstructionsUI();
-      if (ui && ui.handleInstructionChange) {
-        ui.handleInstructionChange(e);
-      }
+function renderModelSettings() {
+    if (!document.getElementById('modelSelect')) return;
+    const settings = mpCurrentSettings();
+    mpFillModelSelect(document.getElementById('modelSelect'), settings, settings.model);
+    if (mpSettingsDraft) mpSettingsDraft.model = document.getElementById('modelSelect').value;
+    for (const [id, key] of [['mpFavoriteModels', 'favoritedModels'], ['mpBlockedModels', 'blockedModels']]) {
+        const select = document.getElementById(id);
+        const chosen = settings[key][settings.backend];
+        const rows = new Map(mpCatalog(settings).map(row => [row.model, row]));
+        for (const model of chosen) if (!rows.has(model)) rows.set(model, { model });
+        select.replaceChildren();
+        for (const row of [...rows.values()].sort((a, b) => mpCompareModelDates(a, b, settings.backend))) {
+            if (key === 'favoritedModels' && settings.blockedModels[settings.backend].includes(row.model)) continue;
+            const option = new Option(`${mpModelSelectOptionText(row)}${row.name && row.name !== row.model ? ` — ${row.model}` : ''}`, row.model, false, chosen.includes(row.model));
+            option.dataset.label = mpModelSelectOptionText(row);
+            select.add(option);
+        }
+        mpModelPickers.find(picker => picker.select === select)?.refresh();
     }
-  };
 }
 
-// Add to MP namespace
-if (typeof MP !== 'undefined') {
-  MP.Settings = {
-    initSettingsModal,
-    closeSettingsModal,
-    saveSettings,
-    resetSettings,
-    loadSettings,
-    updateLinkedModelsUI,
-    fetchModels,
-    initInstructionsUI,
-    getInstructionForFeature,
-    getInstructionContent,
-    showCustomInstructionModal,
-    saveCustomInstructionFromForm,
-    addCustomInstruction,
-    updateCustomInstruction,
-    deleteCustomInstruction,
-    importCustomInstructions,
-    exportInstruction,
-    exportAllInstructions,
-    deleteAllInstructions,
-    toggleInstructionCreationMode,
-    generateInstructionWithAI,
-    regenerateInstruction,
-    initCustomInstructionModal,
-    initInstructionsTabInterface,
-  };
+function mpCaptureInstruction() {
+    if (!mpSettingsDraft) return;
+    const content = document.getElementById('mpInstructionContent').value;
+    if (MP_BUILTINS[mpEditingInstruction]) mpSettingsDraft.instructions[mpEditingInstruction] = content;
+    else if (mpSettingsDraft.instructions.custom[mpEditingInstruction]) {
+        Object.assign(mpSettingsDraft.instructions.custom[mpEditingInstruction], {
+            title: document.getElementById('mpInstructionTitle').value.trim(),
+            tooltip: document.getElementById('mpInstructionTooltip').value.trim(), content,
+            updated: new Date().toISOString()
+        });
+    }
+}
+function renderInstructionList() {
+    const list = document.getElementById('mpInstructionList');
+    const query = document.getElementById('mpInstructionSearch').value.trim().toLowerCase();
+    list.replaceChildren();
+    for (const [id, instruction] of mpInstructionEntries()) {
+        if (!`${instruction.title} ${instruction.tooltip || ''}`.toLowerCase().includes(query)) continue;
+        const button = document.createElement('button');
+        button.type = 'button'; button.className = 'mp-instruction-choice';
+        button.textContent = instruction.title || 'Untitled instruction';
+        button.setAttribute('aria-pressed', String(id === mpEditingInstruction));
+        button.addEventListener('click', () => { mpCaptureInstruction(); mpEditingInstruction = id; renderInstructionList(); mpRenderInstruction(); });
+        list.append(button);
+    }
+    if (!list.children.length) list.textContent = 'No matching instructions.';
+}
+function mpRenderInstruction() {
+    const instruction = mpInstructionEntries().find(([id]) => id === mpEditingInstruction)?.[1];
+    if (!instruction) return;
+    const builtin = !!MP_BUILTINS[mpEditingInstruction];
+    document.getElementById('mpInstructionTitle').value = instruction.title;
+    document.getElementById('mpInstructionTitle').disabled = builtin;
+    document.getElementById('mpInstructionTooltip').value = instruction.tooltip || '';
+    document.getElementById('mpInstructionTooltip').disabled = builtin;
+    document.getElementById('mpInstructionContent').value = instruction.content || '';
+    document.getElementById('mpDeleteInstruction').hidden = builtin;
+}
+async function showSettingsModal() {
+    initSettingsModal();
+    const modal = document.getElementById('settingsModal');
+    if (modal.classList.contains('show')) return;
+    try {
+        await mpSaveQueue.catch(() => {});
+        if (!MP.settingsLoaded) await loadSettings();
+    }
+    catch (error) { showError(`Could not load MagicPrompt settings: ${error.message}`); return; }
+    mpSettingsDraft = mpNormalizeSettings(MP.settings);
+    mpEditingInstruction = 'prompt';
+    document.getElementById('mpInstructionSearch').value = '';
+    mpRenderProvider(); renderModelSettings(); renderInstructionList(); mpRenderInstruction();
+    mpSelectSettingsTab('Provider'); mpSettingsStatus('Changes apply when you save.');
+    mpSettingsOpening = true; mpSettingsCloseQueued = false;
+    (bootstrap.Modal.getInstance(modal) || new bootstrap.Modal(modal)).show();
+    if (!mpCatalog().length) fetchModels().catch(() => {});
+}
+function closeSettingsModal() {
+    if (mpSettingsOpening) { mpSettingsCloseQueued = true; return; }
+    bootstrap.Modal.getInstance(document.getElementById('settingsModal'))?.hide();
+}
+
+async function saveSettings() {
+    if (mpSettingsBusy || !mpSettingsDraft) return;
+    try {
+        mpCaptureInstruction(); mpCaptureProvider(true);
+        for (const [id, instruction] of Object.entries(mpSettingsDraft.instructions.custom)) {
+            if (!instruction.deleted && (!instruction.title?.trim() || !instruction.content?.trim())) {
+                mpEditingInstruction = id; mpSelectSettingsTab('Instructions'); renderInstructionList(); mpRenderInstruction();
+                throw new Error('Each custom instruction needs a name and system prompt.');
+            }
+        }
+        mpCloseModelPickers(); mpCloseSwarmSettingsDropdown();
+        mpSettingsBusy = true;
+        document.getElementById('mpSaveSettings').disabled = true;
+        document.querySelector('#settingsModal .modal-body').inert = true;
+        document.querySelector('#settingsModal .mp-settings-tabs').inert = true;
+        mpSettingsStatus('Saving…');
+        const response = await mpPersistSettings(mpSettingsDraft);
+        const preserveSelection = mpCatalogKey(MP.settings) === mpCatalogKey(mpSettingsDraft);
+        MP.settings = mpNormalizeSettings(response.settings);
+        window.mpRefreshInstructionPrefixes?.(); updateModelListOnLeft(preserveSelection);
+        mpSettingsBusy = false; closeSettingsModal();
+    }
+    catch (error) { mpSettingsStatus(`Could not save: ${error.message}`, true); }
+    finally {
+        mpSettingsBusy = false;
+        document.getElementById('mpSaveSettings').disabled = false;
+        document.querySelector('#settingsModal .modal-body').inert = false;
+        document.querySelector('#settingsModal .mp-settings-tabs').inert = false;
+    }
+}
+
+async function importCustomInstructions(file) {
+    if (!file) return;
+    const data = JSON.parse(await file.text());
+    if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('Expected an instruction JSON object.');
+    const entries = typeof data.title === 'string' ? [data] : Object.values(data);
+    let count = 0;
+    mpCaptureInstruction();
+    for (const instruction of entries) {
+        if (!instruction || typeof instruction.title !== 'string' || typeof instruction.content !== 'string' || !instruction.title.trim() || !instruction.content.trim()) continue;
+        const id = `custom-${Date.now()}-${count++}-${Math.random().toString(36).slice(2, 8)}`;
+        mpSettingsDraft.instructions.custom[id] = { id, title: instruction.title, content: instruction.content, tooltip: typeof instruction.tooltip === 'string' ? instruction.tooltip : '', categories: ['prompt'], created: new Date().toISOString() };
+    }
+    if (!count) throw new Error('No valid instructions found.');
+    renderInstructionList(); mpSettingsStatus(`Imported ${count} instructions. Save to keep them.`);
+}
+function exportInstructions(single) {
+    mpCaptureInstruction();
+    const entries = mpInstructionEntries().filter(([id]) => single ? id === mpEditingInstruction : !MP_BUILTINS[id]);
+    const data = Object.fromEntries(entries);
+    const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+    const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'magicprompt-instructions.json';
+    anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+async function generateInstructionWithAI() {
+    const brief = document.getElementById('mpInstructionBrief').value.trim();
+    if (!brief) { mpSettingsStatus('Describe the instruction first.', true); return; }
+    if (!MP.settings.model) { mpSettingsStatus('Save a default model before generating instructions.', true); return; }
+    const button = document.getElementById('mpGenerateInstruction');
+    const editing = mpEditingInstruction;
+    const draft = mpSettingsDraft;
+    button.disabled = true; mpSettingsStatus('Generating instruction…');
+    try {
+        const response = await MP.APIClient.makeRequest({ modelId: MP.settings.model, action: 'generate-instruction', messageContent: { text: brief, instructions: getInstructionContent('instructiongen') } });
+        if (!response.response?.trim()) throw new Error('The model returned an empty instruction.');
+        if (draft !== mpSettingsDraft) return;
+        if (editing === mpEditingInstruction) document.getElementById('mpInstructionContent').value = response.response;
+        else if (MP_BUILTINS[editing]) draft.instructions[editing] = response.response;
+        else if (draft.instructions.custom[editing] && !draft.instructions.custom[editing].deleted) draft.instructions.custom[editing].content = response.response;
+        mpSettingsStatus('Draft generated. Review the system prompt, then save.');
+    }
+    catch (error) { mpSettingsStatus(`Generation failed: ${error.message}`, true); }
+    finally { button.disabled = false; }
 }

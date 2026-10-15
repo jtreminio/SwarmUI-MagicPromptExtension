@@ -35,16 +35,14 @@ public class MagicPromptAPI
         API.RegisterAPICall(SessionSettings.ResetMagicPromptSettings, false, MagicPromptPermissions.PermResetConfig);
         API.RegisterAPICall(LLMAPICalls.GetMagicPromptModels, true, MagicPromptPermissions.PermGetModels);
         // All key types must be added to the accepted list first
-        string[] keyTypes = ["openai_api", "openrouter_api", "openaiapi_local"];
+        string[] keyTypes = ["openrouter_api", "openaiapi_local"];
         foreach (string keyType in keyTypes)
         {
             BasicAPIFeatures.AcceptedAPIKeyTypes.Add(keyType);
         }
         // Register API Key tables for each backend
-        RegisterApiKeyIfNeeded("openai_api", "openai", "OpenAI (ChatGPT)", "https://platform.openai.com/api-keys",
-            new HtmlString("To use OpenAI models in SwarmUI (via Hartsy extensions), you must set your OpenAI API key."));
         RegisterApiKeyIfNeeded("openrouter_api", "openrouter", "OpenRouter", "https://openrouter.ai/keys",
-            new HtmlString("To use OpenRouter models in SwarmUI (via Hartsy extensions), you must set your OpenRouter API key. OpenRouter gives you access to many different models through a single API."));
+            new HtmlString("To use OpenRouter models in MagicPrompt, you must set your OpenRouter API key. OpenRouter gives you access to many different models through a single API."));
         RegisterApiKeyIfNeeded("openaiapi_local", "openaiapi", "OpenAI API (Local)", "#",
             new HtmlString("For connecting to local servers that implement the OpenAI API schema (like LM Studio, text-generation-webui, or LocalAI). You may need to provide API keys or connection details depending on your local setup."));
     }
@@ -84,28 +82,6 @@ public class MagicPromptAPI
             string messageContent = null;
             switch (llmBackend.ToLower())
             {
-                case "openai":
-                    OpenAIResponse openAIResponse = System.Text.Json.JsonSerializer.Deserialize<OpenAIResponse>(responseContent, jsonSerializerOptions);
-                    if (openAIResponse?.Choices != null && openAIResponse.Choices.Count > 0)
-                    {
-                        messageContent = openAIResponse.Choices[0].Message.Content;
-                    }
-                    else
-                    {
-                        throw new InvalidOperationException("The response from OpenAI could not be processed (no choices found)");
-                    }
-                    break;
-                case "ollama":
-                    OllamaResponse ollamaResponse = System.Text.Json.JsonSerializer.Deserialize<OllamaResponse>(responseContent, jsonSerializerOptions);
-                    if (ollamaResponse?.Message != null)
-                    {
-                        messageContent = ollamaResponse.Message.Content;
-                    }
-                    else
-                    {
-                        throw new InvalidOperationException("The response from Ollama could not be processed (null message)");
-                    }
-                    break;
                 case "openaiapi":
                     OpenAIAPIResponse openAIAPIResponse = System.Text.Json.JsonSerializer.Deserialize<OpenAIAPIResponse>(responseContent, jsonSerializerOptions);
                     if (openAIAPIResponse?.Choices != null && openAIAPIResponse.Choices.Count > 0)
@@ -226,41 +202,6 @@ public class MagicPromptAPI
         {
             switch (backend)
             {
-                case "ollama":
-                    RootObject rootObject = JsonConvert.DeserializeObject<RootObject>(responseContent);
-                    if (rootObject?.Data != null)
-                    {
-                        foreach (ModelData m in rootObject.Data)
-                        {
-                            if (m.ModifiedAt != default)
-                            {
-                                m.Created = new DateTimeOffset(m.ModifiedAt.ToUniversalTime()).ToUnixTimeSeconds();
-                            }
-                        }
-                        return rootObject.Data;
-                    }
-                    else
-                    {
-                        Logs.Error("Data array is null or empty.");
-                        throw new InvalidOperationException("Failed to retrieve models from Ollama. The response data was empty or invalid.");
-                    }
-                case "openai":
-                    OpenAIResponse openAIResponse = JsonConvert.DeserializeObject<OpenAIResponse>(responseContent);
-                    if (openAIResponse?.Data != null)
-                    {
-                        return [.. openAIResponse.Data.Select(
-                            x => new ModelData
-                            {
-                                Model = x.Id,
-                                Name = x.Id,
-                                Created = x.Created > 0 ? x.Created : null
-                            })];
-                    }
-                    else
-                    {
-                        Logs.Error("OpenAI models data array is null or empty.");
-                        throw new InvalidOperationException("Failed to retrieve models from OpenAI. The response data was empty or invalid.");
-                    }
                 case "openaiapi":
                     OpenAIAPIResponse openAIAPIResponse = JsonConvert.DeserializeObject<OpenAIAPIResponse>(responseContent);
                     if (openAIAPIResponse?.Data != null)

@@ -161,6 +161,39 @@ internal static class PromptTagChecks
         }
         passed++;
 
+        // Retired providers must not survive migration, while custom content and supported URLs do.
+        var migrate = typeof(Hartsy.Extensions.MagicPromptExtension.WebAPI.SessionSettings)
+            .GetMethod("RemoveUnsupportedBackends", BindingFlags.NonPublic | BindingFlags.Static)!;
+        foreach (string retired in new[] { "ollama", "openai" })
+        {
+            var saved = JObject.Parse("""
+                {"backend":"openrouter","model":"old-model","visionbackend":"ollama","visionmodel":"vision-model",
+                 "linkChatAndVisionModels":true,"backends":{"ollama":{},"openai":{},"openrouter":{"timeout":90},"openaiapi":{"baseurl":"http://localhost:1234"}},
+                 "instructions":{"custom":{"custom-existing":{"title":"Existing","content":"Exact content"}}}}
+                """);
+            saved["backend"] = retired;
+            migrate.Invoke(null, [saved]);
+            Equal("openrouter", saved["backend"]!.ToString(), $"{retired} fallback");
+            Equal("", saved["model"]!.ToString(), $"{retired} model reset");
+            Equal("Exact content", saved["instructions"]!["custom"]!["custom-existing"]!["content"]!.ToString(), "custom content survives");
+            Equal("http://localhost:1234", saved["backends"]!["openaiapi"]!["baseurl"]!.ToString(), "local URL survives");
+            Equal("False", ((JObject)saved["backends"]!).ContainsKey(retired).ToString(), "retired config removed");
+            Equal("False", saved.ContainsKey("visionbackend").ToString(), "vision config removed");
+        }
+        var body = JObject.FromObject(BackendSchema.GetSchemaType("openrouter", new() { Text = "A scene", Instructions = "Expand" }, "test-model"));
+        Equal("False", body["reasoning"]!["enabled"]!.ToString(), "OpenRouter thinking off");
+        Equal("A scene", body["messages"]![1]!["content"]!.ToString(), "text request content");
+        body = JObject.FromObject(BackendSchema.GetSchemaType("openaiapi", new() { Text = "A scene" }, "local", "high"));
+        Equal("high", body["reasoning_effort"]!.ToString(), "local reasoning effort");
+        Equal("8168", body["max_tokens"]!.ToString(), "local thinking budget");
+        foreach (string retired in new[] { "ollama", "openai" })
+        {
+            bool rejected = false;
+            try { BackendSchema.GetSchemaType(retired, new() { Text = "A scene" }, "test-model"); }
+            catch (ArgumentException) { rejected = true; }
+            Equal("True", rejected.ToString(), $"{retired} schema rejected");
+        }
+
         Console.WriteLine($"Prompt tag checks passed: {passed}");
     }
 }

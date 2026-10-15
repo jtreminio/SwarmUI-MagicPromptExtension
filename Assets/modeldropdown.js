@@ -123,7 +123,7 @@
   function openDropdown(select, trigger) {
     closePopover();
 
-    let backendKey = (window.MP && MP.settings && MP.settings.backend) || 'ollama';
+    let backendKey = (window.MP && MP.settings && MP.settings.backend) || 'openrouter';
 
     let popover = document.createElement('div');
     popover.id = POPOVER_ID;

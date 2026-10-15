@@ -3,32 +3,6 @@ using System.Text.Json.Serialization;
 
 namespace Hartsy.Extensions.MagicPromptExtension.WebAPI.Models;
 
-///<summary>Represents the structure of models returned by OpenAIAPI (local instance).</summary>
-public class OpenAIAPIModels
-{
-    [JsonProperty("models")]
-    public List<OpenAIAPIModelData> Models { get; set; }
-}
-
-///<summary>Represents individual model data from OpenAIAPI.</summary>
-public class OpenAIAPIModelData
-{
-    [JsonProperty("id")]
-    public string Id { get; set; }
-
-    [JsonProperty("object")]
-    public string Object { get; set; }
-
-    [JsonProperty("created")]
-    public long Created { get; set; }
-
-    [JsonProperty("description")]
-    public string Description { get; set; }
-
-    [JsonProperty("tags")]
-    public List<string> Tags { get; set; }
-}
-
 public class OpenAIAPIResponse
 {
     [JsonProperty("data")]
@@ -48,4 +22,62 @@ public class OpenAIAPIResponse
 
     [JsonPropertyName("choices")]
     public List<OpenAIChoice> Choices { get; set; }
+}
+
+// Shared wire types for OpenAI-compatible local servers.
+public class OpenAIChoice
+{
+    [JsonPropertyName("index")]
+    public int Index { get; set; }
+
+    [JsonPropertyName("message")]
+    public OpenAIMessage Message { get; set; }
+
+    [JsonPropertyName("finish_reason")]
+    public string FinishReason { get; set; }
+}
+
+public class OpenAIMessage
+{
+    [JsonPropertyName("role")]
+    public string Role { get; set; }
+
+    [JsonPropertyName("content")]
+    public string Content { get; set; }
+}
+
+public class OpenAIModel
+{
+    [JsonProperty("id")]
+    public string Id { get; set; }
+
+    [JsonProperty("object")]
+    public string Object { get; set; }
+
+    [JsonProperty("created")]
+    public long Created { get; set; }
+
+    [JsonProperty("owned_by")]
+    public string OwnedBy { get; set; }
+}
+
+public class OpenAIErrorResponse
+{
+    [JsonProperty("error")]
+    public OpenAIError Error { get; set; }
+}
+
+public class OpenAIError
+{
+    [JsonProperty("message")]
+    public string Message { get; set; }
+
+    [JsonProperty("type")]
+    public string Type { get; set; }
+
+    [JsonProperty("param")]
+    public string Param { get; set; }
+
+    [JsonProperty("code")]
+    public object Code { get; set; }
 }

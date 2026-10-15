@@ -26,7 +26,7 @@ public class LLMAPICalls : MagicPromptAPI
 
     /// <summary>Fetches available models from the LLM API endpoint.</summary>
     /// <returns>A JSON object containing the models or an error message.</returns>
-    public static async Task<JObject> GetMagicPromptModels(Session session)
+    public static async Task<JObject> GetMagicPromptModels(Session session, string backend = null, string baseurl = null)
     {
         try
         {
@@ -41,26 +41,37 @@ public class LLMAPICalls : MagicPromptAPI
             {
                 return CreateErrorResponse("Configuration not found. Please check your settings.");
             }
+            settings = (JObject)settings.DeepClone();
+            if (!string.IsNullOrEmpty(backend))
+            {
+                backend = backend.ToLowerInvariant();
+                if (backend != "openrouter" && backend != "openaiapi")
+                {
+                    return CreateErrorResponse($"Unsupported backend: {backend}");
+                }
+                settings["backend"] = backend;
+                if (backend == "openaiapi" && !string.IsNullOrWhiteSpace(baseurl))
+                {
+                    string savedUrl = settings["backends"][backend]["baseurl"]?.ToString();
+                    if (baseurl != savedUrl && session?.User?.HasPermission(MagicPromptPermissions.PermSaveConfig) != true)
+                    {
+                        return CreateErrorResponse("Changing the model server URL requires permission to save MagicPrompt settings.");
+                    }
+                    settings["backends"][backend]["baseurl"] = baseurl;
+                }
+            }
             string chatBackend = settings["backend"]?.ToString()?.ToLower() ?? "openrouter";
-            string visionBackend = settings["visionbackend"]?.ToString()?.ToLower() ?? "openrouter";
             // Get chat models
-            List<ModelData> chatModels = await GetModelsForBackend(chatBackend, settings, false, session);
+            List<ModelData> chatModels = await GetModelsForBackend(chatBackend, settings, session);
             if (chatModels == null || !chatModels.Any())
             {
                 return CreateErrorResponse($"Failed to fetch models for {chatBackend}. Please check your API key and try again.");
-            }
-            // Get vision models
-            List<ModelData> visionmodels = await GetModelsForBackend(visionBackend, settings, true, session);
-            if (visionmodels == null || !visionmodels.Any())
-            {
-                return CreateErrorResponse($"Failed to fetch vision models for {visionBackend}. Please check your API key and try again.");
             }
             // Create combined response
             return JObject.FromObject(new
             {
                 success = true,
                 models = chatModels,
-                visionmodels,
                 settings
             });
         }
@@ -74,12 +85,12 @@ public class LLMAPICalls : MagicPromptAPI
                 "1. Restart your LLM backend\n" +
                 "2. Check your system resources\n" +
                 "3. Verify your configuration\n\n" +
-                "Need help? Visit: https://github.com/HartsyAI/SwarmUI-MagicPromptExtension"
+                "4. Check the provider and timeout in MagicPrompt settings"
             );
         }
     }
 
-    public static async Task<List<ModelData>> GetModelsForBackend(string backend, JObject settings, bool isVision = false, Session session = null)
+    public static async Task<List<ModelData>> GetModelsForBackend(string backend, JObject settings, Session session = null)
     {
         // Get endpoint based on backend
         string endpoint = GetEndpoint(backend, settings, "models");
@@ -147,7 +158,7 @@ public class LLMAPICalls : MagicPromptAPI
     /// <summary>Gets the appropriate endpoint for model listing based on the backend.</summary>
     /// <param name="backend">The LLM backend being used.</param>
     /// <param name="settings">The current settings object.</param>
-    /// <param name="endpointType">The type of endpoint (chat, vision, etc.)</param>
+    /// <param name="endpointType">The type of endpoint (chat or models)</param>
     /// <returns>The endpoint URL for model listing.</returns>
     public static string GetEndpoint(string backend, JObject settings, string endpointType)
     {
@@ -169,25 +180,7 @@ public class LLMAPICalls : MagicPromptAPI
             return string.Empty;
         }
         string endpoint;
-        // Special handling for vision endpoints
-        if (endpointType == "vision")
-        {
-            endpoint = backend.ToLower() switch
-            {
-                "openrouter" or "openai" or "openaiapi" => endpoints["chat"]?.ToString(),// OpenAI and OpenRouter use the chat endpoint for vision
-                "ollama" => endpoints["vision"]?.ToString() ?? endpoints["chat"]?.ToString(),// Ollama has a dedicated vision endpoint
-                _ => endpoints[endpointType]?.ToString() ?? endpoints["chat"]?.ToString(),
-            };
-        }
-        // Special handling for models endpoints
-        else if (endpointType == "models")
-        {
-            endpoint = endpoints[endpointType]?.ToString();
-        }
-        else
-        {
-            endpoint = endpoints[endpointType]?.ToString();
-        }
+        endpoint = endpoints[endpointType]?.ToString();
         if (string.IsNullOrEmpty(endpoint))
         {
             Logs.Error($"{endpointType} endpoint not found for backend {backend}");
@@ -234,15 +227,6 @@ public class LLMAPICalls : MagicPromptAPI
         // Process based on backend type
         switch (backend)
         {
-            case "openai":
-                string apiKey = session.User.GetGenericData("openai_api", "key") ?? Program.Sessions.GenericSharedUser.GetGenericData("openai_api", "key");
-                if (string.IsNullOrEmpty(apiKey))
-                {
-                    error = ErrorHandler.FormatErrorMessage(ErrorType.Authentication, "OpenAI API Key not found", "openai");
-                    return false;
-                }
-                request.Headers.Add("Authorization", $"Bearer {apiKey}");
-                break;
             case "openrouter":
                 string openRouterKey = session?.User?.GetGenericData("openrouter_api", "key") ?? Program.Sessions.GenericSharedUser.GetGenericData("openrouter_api", "key");
                 if (string.IsNullOrEmpty(openRouterKey))
@@ -251,7 +235,6 @@ public class LLMAPICalls : MagicPromptAPI
                     return false;
                 }
                 request.Headers.Add("Authorization", $"Bearer {openRouterKey}");
-                request.Headers.Add("HTTP-Referer", "https://github.com/HartsyAI/SwarmUI-MagicPromptExtension");
                 request.Headers.Add("X-Title", "SwarmUI-MagicPromptExtension");
                 break;
             case "openaiapi":
@@ -261,17 +244,10 @@ public class LLMAPICalls : MagicPromptAPI
                     request.Headers.Add("Authorization", $"Bearer {openaiApiKey}");
                 }
                 break;
-            case "ollama":
-                string ollamaKey = session?.User?.GetGenericData("ollama_api", "key") ?? Program.Sessions.GenericSharedUser.GetGenericData("ollama_api", "key");
-                if (!string.IsNullOrEmpty(ollamaKey))
-                {
-                    request.Headers.Add("Authorization", $"Bearer {ollamaKey}");
-                }
-                break;
             default:
                 // Handle unsupported backend
                 error = ErrorHandler.FormatErrorMessage(ErrorType.Generic,
-                    $"Unsupported LLM backend: {backend}. Please select one of the supported backends: Ollama, OpenAI, OpenRouter, or OpenAI API (local).");
+                    $"Unsupported LLM backend: {backend}. Please select one of the supported backends: OpenRouter or OpenAI-compatible API (local).");
                 return false;
         }
         return true;
@@ -297,7 +273,7 @@ public class LLMAPICalls : MagicPromptAPI
             var settings = sessionSettings["settings"] as JObject;
             var backend = settings?["backend"]?.ToString()?.ToLower();
             backendIdentity = $"{backend}\n{GetEndpoint(backend, settings, "chat")}";
-            int defaultTimeout = backend == "ollama" || backend == "openaiapi" ? 120 : 60;
+            int defaultTimeout = backend == "openaiapi" ? 120 : 60;
             int timeoutSec = GetBackendTimeout(settings, backend, defaultTimeout);
 
             // Add 30 second buffer for cache waiting (to exceed the actual LLM timeout)
@@ -381,36 +357,10 @@ public class LLMAPICalls : MagicPromptAPI
             // Create message content with explicit parsing
             MessageContent messageContent = new()
             {
-                Text = messageContentToken["text"]?.ToString(),
-                KeepAlive = messageContentToken["KeepAlive"]?.Value<int?>()
+                Text = messageContentToken["text"]?.ToString()
             };
-            // Safely parse media content if it exists
-            JToken mediaToken = messageContentToken["media"];
-            if (mediaToken != null && mediaToken.Type == JTokenType.Array)
-            {
-                try
-                {
-                    messageContent.Media = mediaToken.ToObject<List<MediaContent>>();
-                }
-                catch (Exception ex)
-                {
-                    Logs.Error($"MagicPromptExtension.LLMAPICalls: Failed to parse media content: {ex.Message}");
-                    return CreateErrorResponse("Failed to parse media content");
-                }
-            }
-            // Parse model ID
             string modelId = requestData["modelId"]?.ToString();
-            // Parse message type with validation
-            MessageType messageType = MessageType.Text;
-            string messageTypeStr = requestData["messageType"]?.ToString();
-            if (!string.IsNullOrEmpty(messageTypeStr))
-            {
-                if (!Enum.TryParse(messageTypeStr, true, out messageType))
-                {
-                    messageType = MessageType.Text;
-                }
-            }
-            string action = requestData["action"]?.ToString()?.ToLower() ?? "chat";
+            string action = requestData["action"]?.ToString()?.ToLower() ?? "prompt";
             string thinking = NormalizeThinking(requestData["thinking"]?.ToString());
             if (string.IsNullOrEmpty(modelId))
             {
@@ -433,12 +383,8 @@ public class LLMAPICalls : MagicPromptAPI
                 Logs.Error($"MagicPromptExtension.LLMAPICalls: Configuration not found. Please check your settings.");
                 return CreateErrorResponse("Configuration not found. Please check your settings.");
             }
-            // Get appropriate backend based on message type
-            string backend = messageType == MessageType.Vision
-                ? settings["visionbackend"]?.ToString()?.ToLower() ?? settings["backend"].ToString().ToLower()
-                : settings["backend"].ToString().ToLower();
-            // Get appropriate endpoint
-            string endpoint = GetEndpoint(backend, settings, messageType == MessageType.Vision ? "vision" : "chat");
+            string backend = settings["backend"].ToString().ToLowerInvariant();
+            string endpoint = GetEndpoint(backend, settings, "chat");
             if (string.IsNullOrEmpty(endpoint))
             {
                 return CreateErrorResponse($"Failed to get endpoint for {backend}");
@@ -451,12 +397,10 @@ public class LLMAPICalls : MagicPromptAPI
             {
                 clientProvidedInstructions = action switch
                 {
-                    "vision" => settings["instructions"]?["vision"]?.ToString() ?? "",
                     "prompt" => settings["instructions"]?["prompt"]?.ToString() ?? "",
-                    "caption" => settings["instructions"]?["caption"]?.ToString() ?? "",
                     "generate-instruction" => settings["instructions"]?["instructiongen"]?.ToString() ?? "",
                     "random-prompt" => settings["instructions"]?["randomprompt"]?.ToString() ?? "",
-                    _ => settings["instructions"]?["chat"]?.ToString() ?? ""
+                    _ => settings["instructions"]?["prompt"]?.ToString() ?? ""
                 };
             }
             messageContent.Instructions = clientProvidedInstructions;
@@ -472,7 +416,7 @@ public class LLMAPICalls : MagicPromptAPI
             object requestBody;
             try
             {
-                requestBody = GetSchemaType(backend, messageContent, modelId, messageType, thinking);
+                requestBody = GetSchemaType(backend, messageContent, modelId, thinking);
             }
             catch (ArgumentException ex)
             {
@@ -486,8 +430,8 @@ public class LLMAPICalls : MagicPromptAPI
             {
                 // Send request and handle response
                 // Detailed diagnostics to help trace hanging requests
-                Logs.Debug($"[MagicPrompt] Sending request | backend={backend} | type={(messageType == MessageType.Vision ? "vision" : "chat")} | endpoint={endpoint} | model={modelId}");
-                int defaultTimeout = backend == "ollama" ? 120 : 60;
+                Logs.Debug($"[MagicPrompt] Sending request | backend={backend} | endpoint={endpoint} | model={modelId}");
+                int defaultTimeout = backend == "openaiapi" ? 120 : 60;
                 int timeoutSec = GetBackendTimeout(settings, backend, defaultTimeout);
                 Logs.Debug($"[MagicPrompt] Using timeout of {timeoutSec} seconds for {backend}");
                 using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSec));

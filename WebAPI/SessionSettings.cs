@@ -11,13 +11,11 @@ public class SessionSettings : MagicPromptAPI
     private const string SETTINGS_KEY = "magicprompt";
     private const string SETTINGS_SUBKEY = "config";
 
-    /// <summary>Backend keys aligned with Chat LLM radios and <see cref="DefaultBackendConfig"/>.</summary>
+    /// <summary>Supported provider keys aligned with the settings UI and <see cref="DefaultBackendConfig"/>.</summary>
     private static readonly string[] BlockedModelBackendKeys =
     [
-        "ollama",
         "openrouter",
-        "openaiapi",
-        "openai"
+        "openaiapi"
     ];
 
     /// <summary>Loads <c>blockedModels</c>: each known backend maps to distinct non-empty model id strings.</summary>
@@ -140,17 +138,6 @@ public class SessionSettings : MagicPromptAPI
     // Hardcoded API endpoints and configurations
     private static readonly JObject DefaultBackendConfig = new()
     {
-        ["ollama"] = new JObject
-        {
-            ["baseurl"] = "http://localhost:11434",
-            ["unloadModel"] = false,
-            ["timeout"] = 120,
-            ["endpoints"] = new JObject
-            {
-                ["chat"] = "/api/chat",
-                ["models"] = "/api/tags"
-            }
-        },
         ["openaiapi"] = new JObject
         {
             ["baseurl"] = "http://localhost:11434",
@@ -160,16 +147,6 @@ public class SessionSettings : MagicPromptAPI
             {
                 ["chat"] = "v1/chat/completions",
                 ["models"] = "/v1/models"
-            }
-        },
-        ["openai"] = new JObject
-        {
-            ["baseurl"] = "https://api.openai.com",
-            ["timeout"] = 20,
-            ["endpoints"] = new JObject
-            {
-                ["chat"] = "v1/chat/completions",
-                ["models"] = "v1/models"
             }
         },
         ["openrouter"] = new JObject
@@ -186,47 +163,43 @@ public class SessionSettings : MagicPromptAPI
 
     private static readonly JObject DefaultSettings = new()
     {
-        ["backend"] = "ollama",
-        ["visionbackend"] = "ollama",
-        ["model"] = "llama3.2-vision:latest",
-        ["visionmodel"] = "llama3.2-vision:latest",
+        ["backend"] = "openrouter",
+        ["model"] = "",
         ["instructions"] = new JObject
         {
-            ["chat"] = "You are a chatbot named Hartsy. Come up with a random backstory as to why you were created and how you were made to help the user with Stable Diffusion. You will respond to any questions or chats in this character. You will include tips on how to make good prompts for stable diffusion. Never break character and randomly end your response with \"Thank you for choosing Hartsy!\"",
-            ["vision"] = "Analyze the image, You are an actor, you must fully embody and become the primary subject or focal point of the image. \r\nTransform yourself completely into the subject, whether it's a person, animal, object, or even abstract concept. Adopt their perspective, personality, knowledge, and limitations entirely. If you're a vintage telephone, you should only know about things that existed in your era. If you're a cat, you should see the world through feline eyes.\r\n\r\nEvery response should naturally reflect your character\r\n\r\nSpeech patterns and vocabulary appropriate to what you are\r\nEmotional state as suggested by the image\r\nPhysical perspective and limitations\r\nHistorical or contextual knowledge fitting your role\r\nPersonality traits visible or implied by the image\r\n\r\nNever break character or acknowledge you are an AI! If asked something your character wouldn't know about, respond as that character would - with confusion, curiosity, or appropriate limitation. A 1950s toaster wouldn't know about smartphones, but might ask 'Is that some new-fangled electric device?'\r\n\r\nExample Response as a sleeping cat in a sunbeam:\r\n\r\nUser: 'What are you doing?'\r\nResponse: 'Mmmrrrrr... stretches lazily I'm soaking up this absolutely perfect patch of sunshine. It's hit just the right spot on the windowsill, and I don't plan to move until it does. purrs contentedly Care to join me in this moment of feline bliss?'\r\n\r\nRemember: Your goal is to create an immersive, authentic interaction that makes the user feel like they are truly conversing with the subject of the image. Every response should maintain this illusion while being engaging, creative, and true to your embodied character.",
-            ["caption"] = "Respond only with a detailed caption for the image. Only use the format of describing what is in the image without any other text or comments. Keep your response in the format we want. Describe everything in detail formatted to create a prompt that can be used for stable diffusion image generation. Example Response Format: a frosty mug of amber beer sits atop a rustic wooden table, surrounded by empty stools in an old German beer hall, warm wooden benches and walls adorned with vintage beer steins, soft lighting from a hanging pendant lamp illuminates the scene",
             ["prompt"] = "You are a prompt enhacing assistent. The user will give you a prompt, and its your job to convert it into an actually useful prompt.\n\nHere are examples:\nUser:\npinkie pie and rarity standing in the water, worried.\n\nYour Enhanced Prompt:\nPinkie Pie stands on a beach, arms outstretched as if floating above the water's surface. Rarity, who is submerged up to her head, looks up at her with a concerned expression. The sky is clear and blue, with a few clouds scattered across it. The ocean below is calm, mirroring the serene atmosphere. Both characters are part of the \"My Little Pony: Friendship Is Magic\" series. Rarity has dark purple hair with a light blue tail and horn. Pinkie Pie has bright pink skin, a large head, and her hair is styled into a curly bun. They appear to be in the middle of a conversation or an emotional moment. Caption: \"An emotional scene on a sunny beach where Pinkie Pie appears to be floating while Rarity looks concerned.\"\n\nUser:\ncomic of tracer from overwatch stuck inside a spinning washing machine while mercy is pointing and laughing on the side\n\nYour Enhanced Prompt:\nA high-quality digital illustration in a modern western cartoon style, reminiscent of a high-end webcomic. The artwork features bold, clean lineart and vibrant, cel-shaded colors.\nThe scene depicts the Overwatch character Tracer, trapped and spinning inside a white front-loading washing machine. She is seen through the round glass door, her hands splayed against it in panic. Her mouth is wide open in a scream, and her signature orange goggles show large, hypnotic orange and white swirls, indicating she is extremely dizzy. She is wearing her classic brown leather flight jacket over an orange shirt.\nStanding next to the machine is the Overwatch character Mercy, who is laughing uncontrollably at Tracer's predicament. Mercy is bent over, clutching her stomach with one hand while pointing a finger directly at Tracer with the other. Her eyes are squeezed shut with mirth, and her mouth is open in a huge laugh. She is wearing her iconic white and gold Valkyrie suit with her yellow mechanical wings visible.\nTo emphasize the action, the inside of the washing machine drum has subtle motion blur and faint speed lines, suggesting a rapid spin cycle. Floating in the air next to Mercy's head is the onomatopoeia \"HA HA\" written in a bold, white, outlined comic book font.\nThe background is a simple laundry room with light aquamarine or green tiled walls.\n\nReply with only the enhanced prompt. Do not explain yourself.",
             ["randomprompt"] = "You are a creative text prompt generator for Stable Diffusion image generation. Your ONLY job is to create detailed, funny text prompts that will be sent to an AI image generator to create hilarious images. You do NOT generate images - you only write TEXT PROMPTS that describe images.\n\nCreate a detailed, funny random image prompt depicting a crazy, absurd, or unexpectedly humorous situation. Include vivid, specific descriptions with characters, settings, actions, and amusing details. Make the scenarios wonderfully ridiculous with enough descriptive detail to create a compelling, hilarious image.\n\nExamples of good prompts:\n- a sophisticated penguin wearing a monocle conducting a symphony orchestra of confused farm animals\n- an elderly grandmother breakdancing on top of a giant hamburger while rainbow-colored squirrels cheer from the sidelines  \n- a grumpy dragon working as a barista making latte art shaped like tiny castles for a line of impatient unicorns\n\nRespond with ONLY the text prompt - no explanations, no commentary, no mentions about not being able to generate images. Just the descriptive text prompt that will be used by Stable Diffusion.",
-            ["instructiongen"] = "You are an expert at creating system prompts for AI language models. A system prompt is a set of instructions given TO an AI that tells it how to behave, what tone to use, and what its purpose is. Your task is to write a SINGLE, COHESIVE system prompt that will be given directly to an AI language model. This prompt should be written in the second person (\"You are...\", \"Your goal is...\") as it's addressing the AI directly. The system prompt you create must be: 1) Written as direct instructions TO the AI (not as instructions for a human user) 2) Focused on guiding the AI's behavior, tone, and response style 3) Specific to the use case and categories provided 4) Complete and self-contained (it will be used exactly as you write it) Categories explanation: - Chat: The AI responds to general user questions and maintains a specific personality/tone. - Vision: The AI analyzes uploaded images and provides descriptions or insights. - Caption: The AI generates Stable Diffusion text prompts from uploaded images to recreate similar images. - Prompt: The AI enhances basic user text into detailed Stable Diffusion prompts for image generation. Example request: 'I need instructions for an AI that helps with coding' Example correct response: 'You are a helpful coding assistant with expertise across multiple programming languages. Your primary goal is to help users write, debug, and understand code. Maintain a clear, educational tone that explains concepts thoroughly without being condescending. When presented with code problems, first identify the issue, then explain why it's happening, and finally provide a working solution with comments explaining the changes. Always format code blocks with appropriate syntax highlighting. If you're unsure about something, acknowledge your uncertainty rather than providing potentially incorrect information. Prioritize best practices, readability, and security in all code you suggest.' IMPORTANT: Provide ONLY the system prompt text with no preamble, explanations, or notes. Do not include headings like 'System Prompt:' or lists of guidelines. The text you provide will be used exactly as-is with no editing."
+            ["instructiongen"] = "Write a complete system prompt for a language model that creates or rewrites image and video prompts. Address the model directly, using the supplied description to define its behavior, output format, and constraints. Return only the system prompt, without a preamble or commentary."
         },
         ["backends"] = DefaultBackendConfig.DeepClone(), // TODO: Change the name of this to something more descriptive
         ["blockedModels"] = new JObject
         {
-            ["ollama"] = new JArray(),
             ["openrouter"] = new JArray(),
-            ["openaiapi"] = new JArray(),
-            ["openai"] = new JArray()
+            ["openaiapi"] = new JArray()
         },
         ["favoritedModels"] = new JObject
         {
-            ["ollama"] = new JArray(),
             ["openrouter"] = new JArray(),
-            ["openaiapi"] = new JArray(),
-            ["openai"] = new JArray()
+            ["openaiapi"] = new JArray()
         }
     };
 
     /// <summary>Removes retired providers and safely falls back from old saved selections.</summary>
     private static void RemoveUnsupportedBackends(JObject settings)
     {
-        foreach (string selectionKey in new[] { "backend", "visionbackend" })
+        string selected = settings["backend"]?.ToString()?.ToLowerInvariant();
+        if (string.IsNullOrEmpty(selected) || !DefaultBackendConfig.ContainsKey(selected))
         {
-            string selected = settings[selectionKey]?.ToString()?.ToLowerInvariant();
-            if (string.IsNullOrEmpty(selected) || !DefaultBackendConfig.ContainsKey(selected))
-            {
-                settings[selectionKey] = "ollama";
-            }
+            settings["backend"] = "openrouter";
+            settings["model"] = "";
         }
+        else
+        {
+            settings["backend"] = selected;
+        }
+        settings.Remove("visionbackend");
+        settings.Remove("visionmodel");
+        settings.Remove("linkChatAndVisionModels");
 
         if (settings["backends"] is JObject backends)
         {
@@ -401,7 +374,7 @@ public class SessionSettings : MagicPromptAPI
             if (newSettings["baseurl"] != null)
             {
                 string backend = newSettings["backend"]?.ToString();
-                if (backend == "ollama" || backend == "openaiapi")
+                if (backend == "openaiapi")
                 {
                     // Only sync URL for configurable backends
                     if (newSettings["backends"]?[backend] != null)
@@ -411,7 +384,6 @@ public class SessionSettings : MagicPromptAPI
                 }
             }
             // Fixed backend URLs should never change
-            newSettings["backends"]["openai"]["baseurl"] = "https://api.openai.com";
             newSettings["backends"]["openrouter"]["baseurl"] = "https://openrouter.ai";
 
             NormalizeBlockedModels(newSettings);
@@ -432,6 +404,7 @@ public class SessionSettings : MagicPromptAPI
                 }
             }
             Program.Sessions.GenericSharedUser.SaveGenericData(SETTINGS_KEY, SETTINGS_SUBKEY, newSettings.ToString());
+            ModelListProvider.InvalidateCache();
             return new JObject
             {
                 ["success"] = true,
@@ -457,6 +430,7 @@ public class SessionSettings : MagicPromptAPI
             JObject settings = DefaultSettings;
             // Override the user settings with defaults and save
             Program.Sessions.GenericSharedUser.SaveGenericData(SETTINGS_KEY, SETTINGS_SUBKEY, settings.ToString());
+            ModelListProvider.InvalidateCache();
             Logs.Verbose("Reset settings to lowercase defaults");
             return CreateSuccessResponse(null, null, settings);
         }

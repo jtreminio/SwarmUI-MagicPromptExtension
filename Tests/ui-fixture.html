@@ -1,0 +1,32 @@
+<!doctype html><html><head><meta charset="utf-8"><title>MagicPrompt UI test fixture</title><link rel="icon" href="data:,"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/swarm/css/bootstrap.min.css"><link rel="stylesheet" href="/swarm/css/site.css"><link rel="stylesheet" href="/swarm/css/genpage.css"><link rel="stylesheet" href="/swarm/css/themes/modern.css"><link rel="stylesheet" href="/swarm/css/themes/modern_dark.css">
+<link rel="stylesheet" href="/Assets/modeldropdown.css"><link rel="stylesheet" href="/Assets/settings.css"><link rel="stylesheet" href="/Assets/prompthistory.css">
+<style>body {font-family:Arial,sans-serif;padding:24px;background:var(--background);color:var(--text)} .fixture-background {max-width:900px;margin:auto;opacity:.7} textarea{width:100%}</style>
+<script src="/swarm/js/lib/jquery.min.js"></script><script src="/swarm/js/lib/bootstrap.min.js"></script>
+<script>
+window.postParamBuildSteps=[];
+window.promptTabComplete={prefixes:{},getPossibleList(){},registerPrefix(){}};
+window.registerMediaButton=()=>{};
+window.triggerChangeFor=el=>el.dispatchEvent(new Event('change',{bubbles:true}));
+window.createDiv=(id,cls,html="")=>{let e=document.createElement('div');e.id=id;e.className=cls;e.innerHTML=html;return e};
+window.escapeHtmlNoBr=text=>String(text).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+window.showError=text=>{window.testErrors.push(text)};window.testErrors=[];
+window.mainGenHandler={doGenerate(overrides,pre,callback){callback({prompt:document.getElementById('alt_prompt_textbox').value})}};
+window.testSettings={backend:'openrouter',model:'google/model-a',backends:{openrouter:{baseurl:'https://openrouter.ai',timeout:90},openaiapi:{baseurl:'http://localhost:1234',timeout:120}},blockedModels:{openrouter:['old/model'],openaiapi:[]},favoritedModels:{openrouter:['google/model-a'],openaiapi:[]},instructions:{prompt:'Rewrite the supplied prompt with concrete visual details.',randomprompt:'Write a random visual prompt.',instructiongen:'Write a system prompt.',custom:Object.fromEntries(Array.from({length:35},(_,i)=>['custom-'+i,{id:'custom-'+i,title:['Cinematic','Video','Illustration','Portrait','Landscape'][i%5]+' '+(i+1),content:'Create a detailed scene with clear lighting, composition, and atmosphere.\n\nPreserve the subjects and actions from the original prompt.',tooltip:'An instruction for image generation',categories:['prompt']}]))}};
+window.testModels=[{model:'google/model-a',name:'Google: Fast model',costOut:'$1.5'},{model:'local/model-b',name:'Local model',costOut:'$0.3'},{model:'old/model',name:'Older model',costOut:'$2'},...Array.from({length:100},(_,i)=>({model:'provider/model-'+i,name:'Provider: Model '+i,costOut:'$0.5'}))];
+window.testWrites=[];
+window.genericRequest=(route,payload,done,depth,fail)=>setTimeout(()=>{
+ if(route==='GetMagicPromptSettings')return done({success:true,settings:structuredClone(testSettings)});
+ if(route==='GetMagicPromptModels')return done({success:true,models:structuredClone(testModels)});
+ if(route==='SaveMagicPromptSettings'){
+  if(window.failSave)return fail('Simulated save failure');
+  testWrites.push(structuredClone(payload));
+  testSettings={...testSettings,...structuredClone(payload.settings)};
+  for(const [id,value]of Object.entries(testSettings.instructions.custom))if(value.deleted)delete testSettings.instructions.custom[id];
+  return done({success:true,settings:structuredClone(testSettings)});
+ }
+ if(route==='MagicPromptPhoneHome')return done({success:true,response:'You create cinematic prompts with precise composition.'});
+},20);
+</script>
+<script src="/swarm/js/genpage/helpers/ui_improvements.js"></script><script src="/Assets/magicprompt.js"></script><script src="/Assets/settings.js"></script><script src="/Assets/modeldropdown.js"></script><script src="/Assets/prompthistory.js"></script>
+</head><body><main id="main_inputs_area" class="fixture-background"><h2>Generate</h2><div id="input_group_content_magicpromptautoenable"></div><textarea id="alt_prompt_textbox" rows="5">Current prompt</textarea><textarea id="input_prompt" hidden></textarea><select id="input_mpmodelid"><option value="google/model-a">Google: Fast model</option></select><select id="input_mpinstructions"><option value="custom-2">Illustration 3</option></select></main></body></html>

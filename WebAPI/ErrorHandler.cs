@@ -88,12 +88,6 @@ public static class ErrorHandler
         return _instance.TryParseOpenRouterError(responseContent, statusCode, out errorType, out errorMessage);
     }
 
-    /// <summary>Attempts to parse Ollama-specific error responses</summary>
-    public static bool TryParseOllamaError(string responseContent, HttpStatusCode statusCode, out ErrorType errorType, out string errorMessage)
-    {
-        return _instance.TryParseOllamaError(responseContent, statusCode, out errorType, out errorMessage);
-    }
-
     /// <summary>Detect error type from raw response content and HTTP status code</summary>
     public static string DetectErrorType(string responseContent, HttpStatusCode statusCode, string provider = null)
     {
@@ -325,7 +319,6 @@ public class ErrorHandlerImplementation : IErrorHandler
                 ],
                 [
                     "Check that the model name is spelled correctly",
-                    "For Ollama: run 'ollama pull modelname' to download the model",
                     "Try a different model from the available models list",
                     "Contact the provider to verify your access to this model"
                 ]
@@ -362,83 +355,6 @@ public class ErrorHandlerImplementation : IErrorHandler
         };
         _providerSpecificTemplates = new Dictionary<string, Dictionary<ErrorType, ErrorTemplateObject>>
         {
-            ["openai"] = new Dictionary<ErrorType, ErrorTemplateObject>
-            {
-                [ErrorType.UnsupportedParameterImage] = new ErrorTemplateObject(
-                    "OpenAI Image Upload Error",
-                    "The selected OpenAI model doesn't support the way your image was uploaded.",
-                    [
-                        "You're using a model without vision capabilities",
-                        "The image format isn't supported (try JPG or PNG)",
-                        "The image is too large (try resizing to under 20MB)"
-                    ],
-                    [
-                        "Make sure you're using GPT-4 Vision or a compatible vision model",
-                        "Check that your image is in the correct format",
-                        "Try a smaller image"
-                    ]
-                ),
-                [ErrorType.Authentication] = new ErrorTemplateObject(
-                    "OpenAI API Key Error",
-                    "Failed to authenticate with the OpenAI API.",
-                    [
-                        "Missing or invalid API key",
-                        "Your OpenAI API key may have expired",
-                        "Your OpenAI account may have billing issues"
-                    ],
-                    [
-                        "Go to the Users tab in SwarmUI",
-                        "Click on the Settings icon for your user",
-                        "Enter or update your OpenAI API key",
-                        "Verify your API key at https://platform.openai.com/api-keys",
-                        "Check your OpenAI account billing status"
-                    ]
-                )
-            },
-            ["ollama"] = new Dictionary<ErrorType, ErrorTemplateObject>
-            {
-                [ErrorType.ServerError] = new ErrorTemplateObject(
-                    "Ollama Server Error",
-                    "The Ollama server is experiencing issues.",
-                    [],
-                    [
-                        "Checking that Ollama is running on your system",
-                        "Restarting the Ollama service",
-                        "Verifying that the model is correctly downloaded",
-                        "Checking system resources (CPU, RAM, disk space)"
-                    ]
-                ),
-                [ErrorType.ModelNotFound] = new ErrorTemplateObject(
-                    "Ollama Model Not Found",
-                    "The requested model could not be found or loaded by Ollama.",
-                    [
-                        "The model hasn't been downloaded yet",
-                        "The model name is misspelled",
-                        "The model file might be corrupted"
-                    ],
-                    [
-                        "Run 'ollama pull modelname' in your terminal to download the model",
-                        "Check the model name against the available models list",
-                        "Restart the Ollama service and try again",
-                        "View available models with 'ollama list'"
-                    ]
-                ),
-                [ErrorType.Connectivity] = new ErrorTemplateObject(
-                    "Ollama Connection Error",
-                    "Cannot connect to the Ollama server.",
-                    [
-                        "The Ollama service is not running",
-                        "Ollama is running on a different port than expected",
-                        "Incorrect API URL configuration"
-                    ],
-                    [
-                        "Ensure Ollama is running by checking for the process",
-                        "Verify the Ollama URL in MagicPrompt settings (default: http://localhost:11434)",
-                        "Restart the Ollama service",
-                        "Check if any other application is using the same port"
-                    ]
-                )
-            },
             ["openrouter"] = new Dictionary<ErrorType, ErrorTemplateObject>
             {
                 [ErrorType.Quota] = new ErrorTemplateObject(
@@ -488,7 +404,6 @@ public class ErrorHandlerImplementation : IErrorHandler
             [HttpStatusCode.Unauthorized] = new Dictionary<string, ErrorType>
             {
                 ["default"] = ErrorType.Authentication,
-                ["ollama"] = ErrorType.Connectivity // Ollama doesn't use auth by default
             },
             [HttpStatusCode.Forbidden] = new Dictionary<string, ErrorType>
             {
@@ -530,7 +445,6 @@ public class ErrorHandlerImplementation : IErrorHandler
             [HttpStatusCode.NotFound] = new Dictionary<string, ErrorType>
             {
                 ["default"] = ErrorType.Generic,
-                ["ollama"] = ErrorType.ModelNotFound // For Ollama, 404 usually means model not found
             }
         };
     }
@@ -639,7 +553,7 @@ public class ErrorHandlerImplementation : IErrorHandler
             }
         }
         // Fallback to HTTP status code
-        return MapStatusCodeToErrorType(statusCode, "openai");
+        return MapStatusCodeToErrorType(statusCode, "openaiapi");
     }
 
     /// <summary>Try to parse OpenRouter error response</summary>
@@ -682,43 +596,6 @@ public class ErrorHandlerImplementation : IErrorHandler
         catch (Exception ex)
         {
             Logs.Error($"Error parsing OpenRouter error response: {ex.Message}");
-        }
-        return false;
-    }
-
-    /// <summary>Attempts to parse Ollama-specific error responses</summary>
-    public bool TryParseOllamaError(string responseContent, HttpStatusCode statusCode, out ErrorType errorType, out string errorMessage)
-    {
-        errorType = ErrorType.Generic;
-        errorMessage = string.Empty;
-        if (string.IsNullOrEmpty(responseContent))
-        {
-            return false;
-        }
-        try
-        {
-            Dictionary<string, string> ollamaError = JsonConvert.DeserializeObject<Dictionary<string, string>>(responseContent);
-            if (ollamaError == null || !ollamaError.TryGetValue("error", out string error) || string.IsNullOrEmpty(error))
-            {
-                return false;
-            }
-            errorMessage = error;
-            // Map Ollama errors based on known patterns without string checks
-            if (statusCode == HttpStatusCode.NotFound)
-            {
-                errorType = ErrorType.ModelNotFound;
-            }
-            else
-            {
-                // Use HTTP status code as a fallback
-                errorType = MapStatusCodeToErrorType(statusCode, "ollama");
-            }
-            Logs.Error($"Ollama error: {error} (HTTP {(int)statusCode})");
-            return true;
-        }
-        catch (Exception ex)
-        {
-            Logs.Error($"Error parsing Ollama error response: {ex.Message}");
         }
         return false;
     }
@@ -769,9 +646,8 @@ public class ErrorHandlerImplementation : IErrorHandler
         string normalizedProvider = NormalizeBackendName(provider);
         return normalizedProvider switch
         {
-            "openai" or "openaiapi" => TryParseOpenAIError(responseContent, statusCode, out errorType, out errorMessage),
+            "openaiapi" => TryParseOpenAIError(responseContent, statusCode, out errorType, out errorMessage),
             "openrouter" => TryParseOpenRouterError(responseContent, statusCode, out errorType, out errorMessage),
-            "ollama" => TryParseOllamaError(responseContent, statusCode, out errorType, out errorMessage),
             _ => false,
         };
     }
@@ -827,7 +703,7 @@ public class ErrorHandlerImplementation : IErrorHandler
         backend = backend.ToLower();
         return backend switch
         {
-            "openaiapi" or "openai-api" => "openai",
+            "openaiapi" or "openai-api" => "openaiapi",
             _ => backend
         };
     }

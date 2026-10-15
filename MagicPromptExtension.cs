@@ -21,7 +21,7 @@ public class MagicPromptExtension : Extension
 
     public override void OnPreInit()
     {
-        Logs.Info("MagicPromptExtension Version 2.4 Now with Vision and automatic processing! has started.");
+        Logs.Info("MagicPrompt prompt tools started.");
         RegisterAssets();
     }
 
@@ -34,14 +34,9 @@ public class MagicPromptExtension : Extension
     private void RegisterAssets()
     {
         ScriptFiles.Add("Assets/magicprompt.js");
-        ScriptFiles.Add("Assets/vision.js");
-        ScriptFiles.Add("Assets/chat.js");
         ScriptFiles.Add("Assets/settings.js");
         ScriptFiles.Add("Assets/modeldropdown.js");
         ScriptFiles.Add("Assets/prompthistory.js");
-        StyleSheetFiles.Add("Assets/magicprompt.css");
-        StyleSheetFiles.Add("Assets/vision.css");
-        StyleSheetFiles.Add("Assets/chat.css");
         StyleSheetFiles.Add("Assets/settings.css");
         StyleSheetFiles.Add("Assets/modeldropdown.css");
         StyleSheetFiles.Add("Assets/prompthistory.css");
@@ -62,7 +57,7 @@ public class MagicPromptExtension : Extension
             Description: "Reuse cached LLM results for matching prompts across image seeds. When disabled, results are still cached, but only reused when the prompt, image seed, and LLM model all match.",
             Default: "true",
             Group: paramGroup,
-            OrderPriority: 1
+            OrderPriority: 6
         ));
 
         T2IParamTypes.Register<bool>(new T2IParamType(
@@ -71,7 +66,7 @@ public class MagicPromptExtension : Extension
                          "This is extremely useful for batching images, so they can reuse cached LLM responses.",
             Default: "false",
             Group: paramGroup,
-            OrderPriority: 2
+            OrderPriority: 7
         ));
 
         _paramModelId = T2IParamTypes.Register<string>(new T2IParamType(
@@ -80,7 +75,7 @@ public class MagicPromptExtension : Extension
             Default: "loading",
             IgnoreIf: "loading",
             Group: paramGroup,
-            OrderPriority: 3,
+            OrderPriority: 1,
             ValidateValues: false,
             GetValues: ModelListProvider.GetModelList
         ));
@@ -91,7 +86,7 @@ public class MagicPromptExtension : Extension
             Default: "loading",
             IgnoreIf: "loading",
             Group: paramGroup,
-            OrderPriority: 4,
+            OrderPriority: 2,
             ValidateValues: false,
             GetValues: ModelListProvider.GetInstructionList
         ));
@@ -109,12 +104,12 @@ public class MagicPromptExtension : Extension
 
         _paramThinking = T2IParamTypes.Register<string>(new T2IParamType(
             Name: "MP Thinking",
-            Description: "How much thinking/reasoning effort the LLM uses before responding. 'None' disables thinking where the backend supports an off switch. Mapping per backend: OpenRouter reasoning effort, OpenAI reasoning_effort, and Ollama think level. Levels only work on reasoning-capable models; some backends reject unsupported levels.",
+            Description: "How much thinking/reasoning effort the LLM uses before responding. 'None' disables thinking where the backend supports an off switch. Mapping per backend: OpenRouter reasoning effort, local API reasoning_effort. Levels only work on reasoning-capable models; some backends reject unsupported levels.",
             Default: "none",
             IgnoreIf: "none",
             GetValues: _ => ["none///None", "low///Low", "medium///Medium", "high///High"],
             Group: paramGroup,
-            OrderPriority: 6
+            OrderPriority: 3
         ));
 
         _paramOnError = T2IParamTypes.Register<string>(new T2IParamType(
@@ -128,7 +123,7 @@ public class MagicPromptExtension : Extension
             IgnoreIf: PromptHandler.OnErrorSkip,
             GetValues: _ => [$"{PromptHandler.OnErrorSkip}///Skip Generation", $"{PromptHandler.OnErrorFallback}///Use Original Prompt"],
             Group: paramGroup,
-            OrderPriority: 7
+            OrderPriority: 8
         ));
 
         _paramDisableLlmRequest = T2IParamTypes.Register<bool>(new T2IParamType(
@@ -137,7 +132,7 @@ public class MagicPromptExtension : Extension
             Default: "false",
             IgnoreIf: "false",
             Group: paramGroup,
-            OrderPriority: 8
+            OrderPriority: 4
         ));
 
         PromptRegion.RegisterCustomPrefix("mpprompt");

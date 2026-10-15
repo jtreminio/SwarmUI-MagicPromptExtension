@@ -5,29 +5,29 @@ used raw prompts opened from the sidebar's "Prompt History"
 button.
 =========================================================== */
 
-#promptHistoryModal {
+.mp-history {
     --history-border: 1px solid var(--border-color);
 }
 
-#promptHistoryModal .modal-content {
+.mp-history .modal-content {
     background: var(--background);
     border: var(--history-border);
     border-radius: 8px;
 }
 
-#promptHistoryModal .modal-header {
+.mp-history .modal-header {
     align-items: center;
     gap: 0.75rem;
 }
 
-#promptHistoryModal .mp-history-count {
+.mp-history .mp-history-count {
     color: var(--text-soft, var(--text));
     font-size: 0.85rem;
     opacity: 0.8;
     white-space: nowrap;
 }
 
-#promptHistoryModal .mp-history-help {
+.mp-history .mp-history-help {
     color: var(--text-soft, var(--text));
     font-size: 0.85rem;
     opacity: 0.8;
@@ -36,7 +36,7 @@ button.
 
 /* Bootstrap's default control colors don't follow the SwarmUI theme, so restate them here
    the same way the settings modal does. */
-#promptHistoryModal .form-control {
+.mp-history .form-control {
     background: var(--background);
     border: var(--history-border);
     border-radius: 4px;
@@ -45,44 +45,44 @@ button.
     width: 100%;
 }
 
-#promptHistoryModal .form-control:focus {
+.mp-history .form-control:focus {
     background: var(--background);
     border-color: var(--emphasis);
     box-shadow: none;
     color: var(--text);
 }
 
-#promptHistoryModal .form-control::placeholder {
+.mp-history .form-control::placeholder {
     color: var(--text-soft, var(--text));
     opacity: 0.6;
 }
 
-#promptHistoryModal .mp-history-filter {
+.mp-history .mp-history-filter {
     align-items: center;
     display: flex;
     gap: 0.5rem;
     margin-bottom: 0.75rem;
 }
 
-#promptHistoryModal .mp-history-filter .form-label {
+.mp-history .mp-history-filter .form-label {
     color: var(--text-soft, var(--text));
     flex: 0 0 auto;
     font-size: 0.85rem;
     margin: 0;
 }
 
-#promptHistoryModal .mp-history-list {
+.mp-history .mp-history-list {
     max-height: min(60vh, 34rem);
     overflow-y: auto;
     border: var(--history-border);
     border-radius: 4px;
 }
 
-#promptHistoryModal .mp-history-list:empty {
+.mp-history .mp-history-list:empty {
     border: none;
 }
 
-#promptHistoryModal .mp-history-item {
+.mp-history .mp-history-item {
     display: flex;
     align-items: flex-start;
     gap: 0.5rem;
@@ -91,22 +91,22 @@ button.
     cursor: pointer;
 }
 
-#promptHistoryModal .mp-history-item:last-child {
+.mp-history .mp-history-item:last-child {
     border-bottom: none;
 }
 
-#promptHistoryModal .mp-history-item:hover,
-#promptHistoryModal .mp-history-item:focus-visible {
+.mp-history .mp-history-item:hover,
+.mp-history .mp-history-item:focus-visible {
     background-color: var(--background-gray);
     outline: none;
 }
 
-#promptHistoryModal .mp-history-item-body {
+.mp-history .mp-history-item-body {
     flex: 1 1 auto;
     min-width: 0;
 }
 
-#promptHistoryModal .mp-history-text {
+.mp-history .mp-history-text {
     color: var(--text);
     font-family: var(--font-monospace, monospace);
     font-size: 0.85rem;
@@ -122,20 +122,20 @@ button.
     overflow: hidden;
 }
 
-#promptHistoryModal .mp-history-meta {
+.mp-history .mp-history-meta {
     color: var(--text-soft, var(--text));
     font-size: 0.75rem;
     opacity: 0.7;
     margin-top: 0.2rem;
 }
 
-#promptHistoryModal .mp-history-actions {
+.mp-history .mp-history-actions {
     display: flex;
     flex: 0 0 auto;
     gap: 0.15rem;
 }
 
-#promptHistoryModal .mp-history-action {
+.mp-history .mp-history-action {
     background: none;
     border: 1px solid transparent;
     border-radius: 4px;
@@ -145,16 +145,16 @@ button.
     padding: 0.25rem 0.35rem;
 }
 
-#promptHistoryModal .mp-history-action:hover {
+.mp-history .mp-history-action:hover {
     background-color: var(--shadow);
     border-color: var(--border-color);
 }
 
-#promptHistoryModal .mp-history-action.danger:hover {
+.mp-history .mp-history-action.danger:hover {
     background-color: var(--danger-color, #dc3545);
 }
 
-#promptHistoryModal .mp-history-empty {
+.mp-history .mp-history-empty {
     color: var(--text-soft, var(--text));
     font-size: 0.9rem;
     opacity: 0.8;
@@ -162,7 +162,7 @@ button.
     text-align: center;
 }
 
-#promptHistoryModal .mp-history-clear-btn {
+.mp-history .mp-history-clear-btn {
     background-color: var(--background-gray);
     border: 1px solid var(--border-color);
     border-radius: 4px;
@@ -172,28 +172,28 @@ button.
     padding: 0.3rem 0.7rem;
 }
 
-#promptHistoryModal .mp-history-clear-btn:hover {
+.mp-history .mp-history-clear-btn:hover {
     background-color: var(--shadow);
 }
 
 /* Armed = one more click wipes the list. */
-#promptHistoryModal .mp-history-clear-btn.armed {
+.mp-history .mp-history-clear-btn.armed {
     background-color: var(--danger-color, #dc3545);
     border-color: var(--danger-color, #dc3545);
     color: white;
 }
 
-#promptHistoryModal .modal-footer {
+.mp-history .modal-footer {
     justify-content: space-between;
 }
 
-#promptHistoryModal .mp-history-hint {
+.mp-history .mp-history-hint {
     color: var(--text-soft, var(--text));
     font-size: 0.8rem;
     opacity: 0.7;
 }
 
-#promptHistoryModal .mp-cancel-btn {
+.mp-history .mp-cancel-btn {
     background-color: var(--background-gray);
     border: 1px solid var(--border-color);
     border-radius: 4px;
@@ -202,6 +202,14 @@ button.
     padding: 0.5rem 1rem;
 }
 
-#promptHistoryModal .mp-cancel-btn:hover {
+.mp-history .mp-cancel-btn:hover {
     background-color: var(--shadow);
 }
+
+/* Keep actions legible and independently keyboard-operable. */
+.mp-history .mp-history-item-body { text-align: left; color: inherit; background: transparent; border: 0; padding: 0; cursor: pointer; }
+.mp-history .mp-history-action { color: var(--text); background: var(--background-gray); border-color: var(--border-color); min-height: 32px; padding: .4rem .55rem; }
+.mp-history .mp-history-actions { flex-wrap: wrap; gap: .3rem; }
+.mp-history .mp-history-item { padding: .8rem; gap: 1rem; }
+.mp-history button:focus-visible { outline: 2px solid var(--emphasis); outline-offset: 2px; }
+@media (max-width: 700px) { .mp-history .mp-history-item { flex-direction: column; } }

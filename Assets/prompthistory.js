@@ -89,6 +89,7 @@
             }
             try {
                 localStorage.removeItem(STORAGE_KEY);
+                return entries.length === 0;
             } catch (error) {
                 console.error('MagicPrompt: could not clear prompt history:', error);
             }
@@ -114,7 +115,7 @@
             if (existingIndex >= 0) {
                 entries.splice(existingIndex, 1);
             }
-            entries.unshift({ prompt: prompt.trim(), at: Date.now() });
+            entries.unshift({ prompt, at: Date.now() });
             this.save(entries);
             if (this.isModalOpen()) {
                 this.render();
@@ -137,7 +138,7 @@
             const promptBox = document.getElementById('alt_prompt_textbox');
             if (!promptBox) {
                 showError('Could not find the prompt box.');
-                return;
+                return false;
             }
             if (append && promptBox.value.trim()) {
                 promptBox.value = `${promptBox.value.replace(/\s+$/, '')} ${prompt}`;
@@ -145,12 +146,19 @@
             else {
                 promptBox.value = prompt;
             }
+            promptBox.dispatchEvent(new Event('input', { bubbles: true }));
             triggerChangeFor(promptBox);
+            const hiddenPrompt = document.getElementById('input_prompt');
+            if (hiddenPrompt && hiddenPrompt !== promptBox) {
+                hiddenPrompt.value = promptBox.value;
+                triggerChangeFor(hiddenPrompt);
+            }
             // The prompt box lives on the Generate tab, so only focus it when that tab is actually showing.
             if (promptBox.offsetParent !== null) {
                 promptBox.focus();
                 promptBox.setSelectionRange(promptBox.value.length, promptBox.value.length);
             }
+            return true;
         },
 
         isModalOpen() {
@@ -203,16 +211,16 @@
                     : '';
             }
             list.innerHTML = filtered.map((entry, index) => `
-                <div class="mp-history-item" data-index="${index}" tabindex="0" role="button" title="${escapeHtmlNoBr(entry.prompt)}">
-                    <div class="mp-history-item-body">
+                <div class="mp-history-item" data-index="${index}" role="listitem">
+                    <button type="button" class="mp-history-item-body" data-action="use" title="Use this prompt">
                         <div class="mp-history-text">${escapeHtmlNoBr(entry.prompt)}</div>
                         <div class="mp-history-meta">${escapeHtmlNoBr(this.describeAge(entry.at))}</div>
-                    </div>
+                    </button>
                     <div class="mp-history-actions">
-                        <button type="button" class="mp-history-action" data-action="use" title="Replace the prompt box with this">📝</button>
-                        <button type="button" class="mp-history-action" data-action="append" title="Append this to the prompt box">➕</button>
-                        <button type="button" class="mp-history-action" data-action="copy" title="Copy to clipboard">📋</button>
-                        <button type="button" class="mp-history-action danger" data-action="delete" title="Remove from history">🗑️</button>
+                        <button type="button" class="mp-history-action" data-action="use" title="Replace the prompt box with this">Use</button>
+                        <button type="button" class="mp-history-action" data-action="append" title="Append this to the prompt box">Append</button>
+                        <button type="button" class="mp-history-action" data-action="copy" title="Copy to clipboard">Copy</button>
+                        <button type="button" class="mp-history-action danger" data-action="delete" title="Remove from history">Delete</button>
                     </div>
                 </div>`).join('');
             const empty = document.getElementById(EMPTY_ID);
@@ -236,20 +244,44 @@
             const action = event.target.closest('.mp-history-action')?.dataset.action || 'use';
             switch (action) {
                 case 'append':
-                    this.applyToPromptBox(entry.prompt, true);
-                    this.close();
+                    if (this.applyToPromptBox(entry.prompt, true)) this.close(true);
                     break;
                 case 'copy':
-                    navigator.clipboard?.writeText(entry.prompt).catch(error => showError(`Failed to copy: ${error}`));
+                    this.copyPrompt(entry.prompt, event.target.closest('button'));
                     break;
                 case 'delete':
                     this.remove(entry.prompt);
                     break;
                 default:
-                    this.applyToPromptBox(entry.prompt, false);
-                    this.close();
+                    if (this.applyToPromptBox(entry.prompt, false)) this.close(true);
                     break;
             }
+        },
+
+        async copyPrompt(prompt, button) {
+            try {
+                if (navigator.clipboard?.writeText) {
+                    await navigator.clipboard.writeText(prompt);
+                }
+                else {
+                    // The fallback must live inside the modal's focus trap.
+                    const textarea = document.createElement('textarea');
+                    textarea.value = prompt;
+                    textarea.style.position = 'fixed';
+                    textarea.style.opacity = '0';
+                    document.getElementById(MODAL_ID).append(textarea);
+                    try {
+                        textarea.focus(); textarea.select();
+                        if (!document.execCommand('copy')) throw new Error('Clipboard access was denied.');
+                    }
+                    finally { textarea.remove(); button?.focus(); }
+                }
+                if (button?.isConnected) {
+                    button.textContent = 'Copied';
+                    setTimeout(() => { if (button.isConnected) button.textContent = 'Copy'; }, 1500);
+                }
+            }
+            catch (error) { showError(`Failed to copy: ${error.message}`); }
         },
 
         /** Clearing wipes everything, so the button arms on the first click and only clears on the second. */
@@ -261,7 +293,8 @@
                     button.classList.add('armed');
                     button.textContent = 'Click again to confirm';
                 }
-                setTimeout(() => this.disarmClear(), 5000);
+                clearTimeout(this.clearTimer);
+                this.clearTimer = setTimeout(() => this.disarmClear(), 5000);
                 return;
             }
             this.disarmClear();
@@ -269,6 +302,7 @@
         },
 
         disarmClear() {
+            clearTimeout(this.clearTimer);
             const button = document.getElementById(CLEAR_BTN_ID);
             this.clearArmed = false;
             if (button) {
@@ -289,15 +323,29 @@
             }
             this.disarmClear();
             this.render();
+            this.opening = true;
+            this.closeAfterOpen = false;
+            modal.addEventListener('shown.bs.modal', () => {
+                this.opening = false;
+                if (this.closeAfterOpen) this.close();
+                else filterInput?.focus();
+            }, { once: true });
             (bootstrap.Modal.getInstance(modal) || new bootstrap.Modal(modal)).show();
-            filterInput?.focus();
         },
 
-        close() {
+        close(focusPrompt = false) {
             const modal = document.getElementById(MODAL_ID);
             if (!modal) {
                 return;
             }
+            if (focusPrompt) {
+                modal.addEventListener('hidden.bs.modal', () => {
+                    const prompt = document.getElementById('alt_prompt_textbox');
+                    if (prompt?.offsetParent !== null) prompt?.focus();
+                }, { once: true });
+            }
+            // Bootstrap ignores hide() during its opening transition. Queue the action instead.
+            if (this.opening) { this.closeAfterOpen = true; return; }
             try {
                 bootstrap.Modal.getInstance(modal)?.hide();
             } catch (error) {
@@ -312,12 +360,6 @@
             }
             list.dataset.mpBound = 'true';
             list.addEventListener('click', event => this.handleListClick(event));
-            list.addEventListener('keydown', event => {
-                if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault();
-                    this.handleListClick(event);
-                }
-            });
             document.getElementById(FILTER_ID)?.addEventListener('input', event => {
                 this.filter = event.target.value.trim().toLowerCase();
                 this.render();
@@ -368,7 +410,27 @@
                 return;
             }
             group.append(createDiv(linkId, 'keep_group_visible',
-                `<button type="button" class="basic-button" onclick="showPromptHistoryModal()">📜 Prompt History</button>`));
+                `<button type="button" class="basic-button" onclick="showPromptHistoryModal()">Prompt History</button>`));
+            const refresh = createDiv('magicprompt_sidebar_refresh', 'keep_group_visible',
+                `<button type="button" class="basic-button" title="Refresh available models">Refresh</button><span class="ms-2 small" role="status" aria-live="polite"></span>`);
+            const button = refresh.querySelector('button');
+            const status = refresh.querySelector('[role="status"]');
+            button.addEventListener('click', async () => {
+                button.disabled = true;
+                button.textContent = 'Refreshing…';
+                status.textContent = '';
+                try {
+                    if (!MP.settingsLoaded) await loadSettings();
+                    const result = await fetchModels(MP.settings);
+                    status.textContent = `${result.models.length} models available.`;
+                }
+                catch (error) { status.textContent = `Refresh failed: ${error.message}`; }
+                finally {
+                    button.disabled = false;
+                    button.textContent = 'Refresh';
+                }
+            });
+            group.append(refresh);
         };
         if (typeof postParamBuildSteps !== 'undefined') {
             postParamBuildSteps.push(build);
@@ -377,11 +439,34 @@
     }
 
     document.addEventListener('DOMContentLoaded', () => {
-        // The modal markup lives in the MagicPrompt tab-pane, which is display:none while the Generate tab is
-        // active. Move it to <body> (as magicprompt.js does for the other modals) so it renders from anywhere.
-        const modal = document.getElementById(MODAL_ID);
-        if (modal && modal.parentElement !== document.body) {
-            document.body.appendChild(modal);
+        if (!document.getElementById(MODAL_ID)) {
+            document.body.insertAdjacentHTML('beforeend', `    <div class="modal fade mp-history" id="promptHistoryModal" tabindex="-1" aria-labelledby="promptHistoryModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title translate" id="promptHistoryModalLabel">Prompt History</h5>
+                    <span id="promptHistoryCount" class="mp-history-count"></span>
+                    <button type="button" class="mp-history-clear-btn ms-auto" id="promptHistoryClearBtn">Clear All</button>
+                    <button type="button" class="btn-close translate" aria-label="Close" onclick="closePromptHistoryModal()"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="mp-history-help">The last 100 unique prompts you sent to generate, exactly as you typed them - wildcards, variables and mpprompt tags left unexpanded.</p>
+                    <div class="mp-history-filter">
+                        <label class="form-label" for="promptHistoryFilter">Filter</label>
+                        <input type="search" class="form-control" id="promptHistoryFilter" autocomplete="off" placeholder="Search prompts">
+                    </div>
+                    <div id="promptHistoryList" class="mp-history-list" role="list"></div>
+                    <p id="promptHistoryEmpty" class="mp-history-empty" hidden></p>
+                </div>
+                <div class="modal-footer">
+                    <span class="mp-history-hint">Click a prompt to load it into the prompt box.</span>
+                    <button type="button" class="mp-cancel-btn" onclick="closePromptHistoryModal()">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+`);
         }
         PromptHistory.bindModal();
         PromptHistory.hookGenerateHandler();

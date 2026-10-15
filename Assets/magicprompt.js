@@ -20,199 +20,24 @@ if (typeof showError === 'function') {
     };
 }
 
-// Initialize MagicPrompt global namespace if it doesn't exist
-if (!window.MP) {
-    window.MP = {
-        initialized: false,
-        allInstructionNames: [],
-        settings: {
-            // Core settings
-            backend: 'ollama',
-            model: '',
-            visionbackend: 'ollama',
-            visionmodel: '',
-            linkChatAndVisionModels: true, // Default to true
-            // Backend configurations
-            backends: {
-                ollama: {
-                    baseurl: 'http://localhost:11434',
-                    unloadModel: false,
-                    timeout: 120,
-                    endpoints: {
-                        chat: '/api/chat',
-                        models: '/api/tags'
-                    }
-                },
-                openaiapi: {
-                    baseurl: 'http://localhost:11434',
-                    unloadModel: false,
-                    timeout: 120,
-                    endpoints: {
-                        chat: 'v1/chat/completions',
-                        models: '/v1/models'
-                    },
-                    apikey: ''
-                },
-                openai: {
-                    baseurl: 'https://api.openai.com',
-                    timeout: 20,
-                    endpoints: {
-                        chat: 'v1/chat/completions',
-                        models: 'v1/models'
-                    },
-                    apikey: ''
-                },
-                openrouter: {
-                    baseurl: 'https://openrouter.ai',
-                    timeout: 20,
-                    endpoints: {
-                        chat: '/api/v1/chat/completions',
-                        models: '/api/v1/models'
-                    },
-                    apikey: ''
-                }
-            },
-            blockedModels: {
-                ollama: [],
-                openrouter: [],
-                openaiapi: [],
-                openai: [],
-            },
-            favoritedModels: {
-                ollama: [],
-                openrouter: [],
-                openaiapi: [],
-                openai: [],
-            },
-            // Instructions
-            instructions: {
-                chat: '',
-                vision: '',
-                caption: '',
-                prompt: ''
-            }
-        },
-
-        APIClient: {
-            /**
-             * Makes an API request using SwarmUI's genericRequest
-             * @param {Object} payload - Request payload
-             * @returns {Promise<Object>} API response
-             */
-            async makeRequest(payload) {
-                if (!payload) {
-                    throw new Error('Invalid payload');
-                }
-                // Allow handling of existing requests for vision mode
-                const isVisionRequest = payload.messageType === 'Vision';
-                const currentMode = document.getElementById('vision_mode')?.checked;
-                if (!isVisionRequest && currentMode) {
-                    const currentImage = window.visionHandler?.getCurrentImage();
-                    if (currentImage) {
-                        payload.messageContent.media = [{
-                            type: "base64",
-                            data: currentImage
-                        }];
-                        payload.messageType = 'Vision';
-                    }
-                }
-                console.log('Making API request with instructions:', payload.messageContent.instructions);
-                try {
-                    return new Promise((resolve, reject) => {
-                        genericRequest('MagicPromptPhoneHome', payload,
-                            data => {
-                                if (data.success) {
-                                    console.log('API request successful:', data);
-                                    resolve(data);
-                                } else {
-                                    console.error('API request failed:', data.error);
-                                    reject(new Error(data.error || 'API request failed'));
-                                }
-                            },
-                            0,
-                            error => {
-                                console.error('MagicPrompt API request failed:', error);
-                                reject(new Error(error));
-                            }
-                        );
-                    });
-                } catch (error) {
-                    console.error('API request error:', error);
-                    throw error;
-                }
-            }
-        },
-
-        RequestBuilder: {
-            /**
-             * Creates a request payload for API calls
-             * @param {string} input - User input text
-             * @param {string|null} image - Base64 image data
-             * @param {string} action - Action type ('chat', 'vision', 'prompt', 'caption')
-             * @returns {Object} Formatted request payload
-             */
-            createRequestPayload(input, image, action) {
-                // only allow input to be empty for 'random-prompt' action
-                if (!input?.trim() && action !== 'random-prompt') {
-                    throw new Error('Input is required');
-                }
-                const hasImage = Boolean(image);
-                const featureName = action.toLowerCase();
-                console.log(`Action: "${action}", featureName: "${featureName}"`);
-
-                // Use the feature mapping system to get the right instruction type
-                const instructionType = getInstructionForFeature(featureName);
-                console.log(`Instruction type from feature mapping: "${instructionType}"`);
-
-                // If no mapping found, use the featureName as fallback
-                const effectiveType = instructionType || featureName;
-                console.log(`Effective instruction type: "${effectiveType}"`);
-
-                const instructions = getInstructionContent(effectiveType);
-                try {
-                    // Get model and backend based on request type
-                    const modelId = this.getModelId(hasImage);
-                    const backend = hasImage ? MP.settings.visionbackend : MP.settings.backend;
-                    // Get appropriate instructions based on action type and feature mapping
-                    const featureName = action.toLowerCase();
-                    // Use the feature mapping system to get the right instruction type
-                    const instructionType = getInstructionForFeature(featureName) || featureName;
-                    const instructions = getInstructionContent(instructionType);
-                    console.log('CreaterequestPayload: Using instructions:', instructions);
-                    // Create the message content
-                    const messageContent = {
-                        text: input,
-                        media: image ? [{ type: "base64", data: image, mediaType: window.visionHandler?.currentMediaType || "image/jpeg" }] : null,
-                        instructions: instructions,
-                        KeepAlive: (backend.toLowerCase() === 'ollama' && MP.settings.backends[backend]?.unloadModel) ? 0 : null
-                    };
-                    return {
-                        messageContent,
-                        modelId,
-                        messageType: hasImage ? "Vision" : "Text",
-                        action: featureName,
-                    };
-                } catch (error) {
-                    console.error('Error creating request payload:', error);
-                    throw error;
-                }
-            },
-
-            getModelId(isVision) {
-                if (MP.settings.linkChatAndVisionModels) {
-                    return document.getElementById('modelSelect')?.value;
-                }
-                const modelId = isVision
-                    ? document.getElementById('visionModel')?.value
-                    : document.getElementById('modelSelect')?.value;
-
-                if (!modelId) {
-                    throw new Error('Please select a model first');
-                }
-                return modelId;
-            },
-        },
-
+// Shared state for prompt tools. Provider settings are loaded from the server.
+window.MP = {
+    initialized: false,
+    allInstructionNames: [],
+    settings: { backend: 'openrouter', model: '', backends: {}, instructions: { custom: {} }, blockedModels: {}, favoritedModels: {} },
+    APIClient: {
+        makeRequest(payload) {
+            return new Promise((resolve, reject) => {
+                genericRequest('MagicPromptPhoneHome', payload, data => {
+                    if (data.success) resolve(data);
+                    else reject(new Error(data.error || 'API request failed'));
+                }, 0, error => {
+                    console.error('MagicPrompt API request failed:', error);
+                    reject(new Error(error));
+                });
+            });
+        }
+    },
         ResponseHandler: {
             handleResponse(response, action) {
                 if (!response) {
@@ -249,85 +74,13 @@ if (!window.MP) {
                 console.error('MagicPrompt:', errorMessage);
                 return null;
             }
-        },
-
-        ResizeHandler: class {
-            constructor(options) {
-                this.handle = options.handle;
-                this.panel = options.panel;
-                this.storageKey = options.storageKey;
-                this.defaultWidth = options.defaultWidth || 400;
-                this.minWidth = options.minWidth || 300;
-                this.maxWidthOffset = options.maxWidthOffset || 300;
-                this.isDragging = false;
-                this.startX = 0;
-                this.startWidth = 0;
-                // Bind methods
-                this.startDragging = this.startDragging.bind(this);
-                this.doDrag = this.doDrag.bind(this);
-                this.stopDragging = this.stopDragging.bind(this);
-                this.init();
-            }
-
-            init() {
-                // Set initial width from storage or default
-                const storedWidth = localStorage.getItem(this.storageKey);
-                const initialWidth = storedWidth ? parseInt(storedWidth) : this.defaultWidth;
-                this.panel.style.width = `${initialWidth}px`;
-                // Add event listener to handle
-                this.handle.addEventListener('mousedown', this.startDragging);
-                // Add to layout resets if available
-                if (window.layoutResets) {
-                    window.layoutResets.push(() => {
-                        localStorage.removeItem(this.storageKey);
-                        this.panel.style.width = `${this.defaultWidth}px`;
-                    });
-                }
-            }
-
-            startDragging(e) {
-                this.isDragging = true;
-                this.startX = e.pageX;
-                this.startWidth = parseInt(document.defaultView.getComputedStyle(this.panel).width, 10);
-                // Add event listeners
-                document.addEventListener('mousemove', this.doDrag);
-                document.addEventListener('mouseup', this.stopDragging);
-                // Add dragging class
-                document.body.classList.add('dragging');
-                // Prevent text selection
-                e.preventDefault();
-            }
-
-            doDrag(e) {
-                if (!this.isDragging) return;
-                e.preventDefault();
-                const containerWidth = this.panel.parentElement.getBoundingClientRect().width;
-                // Calculate new width
-                let newWidth = this.startWidth + (e.pageX - this.startX);
-                // Clamp the width between min and max
-                newWidth = Math.max(this.minWidth, Math.min(containerWidth - this.maxWidthOffset, newWidth));
-                // Apply the new width
-                this.panel.style.width = `${newWidth}px`;
-                // Save the width
-                localStorage.setItem(this.storageKey, newWidth);
-            }
-
-            stopDragging() {
-                if (!this.isDragging) return;
-                this.isDragging = false;
-                document.removeEventListener('mousemove', this.doDrag);
-                document.removeEventListener('mouseup', this.stopDragging);
-                document.body.classList.remove('dragging');
-            }
         }
-    }
 };
 
 /**
  * Adds a "MagicPrompt Settings" link into the Magic Prompt group in the
  * Generate tab's left sidebar (alongside the extension's other parameter
- * fields). Clicking it opens the same settings modal as the gear button in
- * the MagicPrompt tab.
+ * fields). Clicking it opens the prompt tools settings.
  * @returns {void}
  */
 function addSidebarSettingsLink() {
@@ -342,7 +95,7 @@ function addSidebarSettingsLink() {
             return;
         }
         group.append(createDiv(linkId, 'keep_group_visible',
-            `<button type="button" class="basic-button" onclick="showSettingsModal()">⚙️ MagicPrompt Settings</button>`));
+            `<button type="button" class="basic-button" onclick="showSettingsModal()">MagicPrompt Settings</button>`));
     };
     if (typeof postParamBuildSteps !== 'undefined') {
         postParamBuildSteps.push(build);
@@ -478,55 +231,18 @@ document.addEventListener("DOMContentLoaded", async function () {
     try {
         if (MP.initialized) return;
         MP.initialized = true;
+        initSettingsModal();
+        addSidebarSettingsLink();
         // Initialize settings
         await loadSettings();
+        if (typeof postParamBuildSteps !== 'undefined') postParamBuildSteps.push(() => updateModelListOnLeft(true));
+        updateModelListOnLeft(true);
         // Populate instruction prefixes for autocomplete
         mpRefreshInstructionPrefixes();
-        // Add a Settings link into the Magic Prompt group in the left sidebar
-        addSidebarSettingsLink();
         // Setup auto wildcard seed generation on Generate click (capture phase, before onclick)
         wildcardSeedGenerator();
-        // Relocate the MagicPrompt modals to <body> so they render regardless of
-        // the active tab. They live inside the MagicPrompt tab-pane, which is
-        // display:none when another tab (e.g. Generate) is active, which would
-        // otherwise leave the modal invisible (only its backdrop showing) when
-        // opened from the sidebar Settings link.
-        ['settingsModal', 'customInstructionModal', 'confirmDeleteModal'].forEach(id => {
-            const modal = document.getElementById(id);
-            if (modal && modal.parentElement !== document.body) {
-                document.body.appendChild(modal);
-            }
-        });
-        // Initialize modal
-        $('#settingsModal').modal({
-            backdrop: true, keyboard: true, show: false
-        }).on('show.bs.modal', initSettingsModal);
-        // Initialize models
         await fetchModels();
-        MP.modelsInitialized = true;
-        // Initialize handlers
-        if (window.visionHandler) {
-            await window.visionHandler.initialize();
-        }
-        if (window.chatHandler) {
-            await window.chatHandler.initialize();
-        }
-        // Initialize resize handler
-        const resizeHandle = document.getElementById('resize_handle');
-        const visionSection = document.getElementById('vision_section');
-        if (resizeHandle && visionSection) {
-            new MP.ResizeHandler({
-                handle: resizeHandle,
-                panel: visionSection,
-                storageKey: 'magicprompt_vision_width',
-                defaultWidth: 400,
-                minWidth: 300,
-                maxWidthOffset: 300
-            });
-        }
-        // Update linked models UI
-        const isLinked = MP.settings.linkChatAndVisionModels !== false;
-        updateLinkedModelsUI(isLinked);
+        updateModelListOnLeft(true);
     } catch (error) {
         console.error('Error initializing MagicPrompt:', error);
         MP.ResponseHandler.showError('Failed to initialize MagicPrompt: ' + error.message);
@@ -534,7 +250,8 @@ document.addEventListener("DOMContentLoaded", async function () {
 });
 
 function mpRefreshInstructionPrefixes() {
-    const instructions = ['prompt', 'chat', 'vision', 'caption'];
+    for (const name of MP.allInstructionNames) delete promptTabComplete.prefixes[`mpprompt[${name}]`];
+    const instructions = ['prompt'];
     if (MP.settings?.instructions?.custom) {
         for (const [, instruction] of Object.entries(MP.settings.instructions.custom)) {
             if (instruction && !instruction.deleted && instruction.title) {

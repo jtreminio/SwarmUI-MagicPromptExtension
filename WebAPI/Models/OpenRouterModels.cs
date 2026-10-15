@@ -3,12 +3,6 @@ using Newtonsoft.Json.Linq;
 
 namespace Hartsy.Extensions.MagicPromptExtension.WebAPI.Models;
 
-public class OpenRouterBackend : Backend
-{
-    public string ApiKey { get; set; }
-    public string BaseUrl { get; set; }
-}
-
 public class OpenRouterResponse
 {
     [JsonProperty("data")]

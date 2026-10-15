@@ -1,34 +1,22 @@
-﻿using Newtonsoft.Json;
-using System.Text.Json.Serialization;
+using Newtonsoft.Json;
 
 namespace Hartsy.Extensions.MagicPromptExtension.WebAPI.Models;
 
-///<summary>Represents the structure of Ollama's configuration (no BaseUrl or ApiKey).</summary>
-public class Backend
+/// <summary>Provider-independent model catalog entry.</summary>
+public class ModelData
 {
-    public Dictionary<string, string> Endpoints { get; set; }
-}
+    [JsonProperty("name")]
+    public string Name { get; set; }
 
-///<summary>Represents the structure for openaiapi which requires only an ApiKey (optional).</summary>
-public class OpenAIAPIBackend : Backend
-{
-    public string BaseUrl { get; set; }
-    public string ApiKey { get; set; }
-}
+    [JsonProperty("model")]
+    public string Model { get; set; }
 
-/// <summary>The message content within a response, including the content and the role.</summary>
-public class Message
-{
-    [JsonProperty("content")]
-    public string Content { get; set; }
+    [JsonProperty("costOut", NullValueHandling = NullValueHandling.Ignore)]
+    public string CostOut { get; set; }
 
-    [JsonProperty("role")]
-    public string Role { get; set; }
-}
+    [JsonProperty("created", NullValueHandling = NullValueHandling.Ignore)]
+    public long? Created { get; set; }
 
-/// <summary>The root object containing a list of models.</summary>
-public class RootObject // TODO: Rename this class to something more descriptive
-{
-    [JsonProperty("models")]
-    public List<ModelData> Data { get; set; }
+    [JsonProperty("outUsdPerMillion", NullValueHandling = NullValueHandling.Ignore)]
+    public double? OutUsdPerMillion { get; set; }
 }
