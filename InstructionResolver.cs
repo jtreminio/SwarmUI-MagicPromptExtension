@@ -8,43 +8,51 @@ namespace Hartsy.Extensions.MagicPromptExtension;
 
 public static class InstructionResolver
 {
-    public static string Resolve(T2IParamInput userInput, string instructionId, T2IRegisteredParam<string> paramInstructions)
+    public static string Resolve(T2IParamInput userInput, string instructionId, T2IRegisteredParam<string> paramInstructions, IReadOnlyDictionary<string, string> variables = null)
     {
         var instructionKey = GetInstructionKey(userInput, instructionId, paramInstructions);
         var instructionsObj = GetInstructionsObject();
 
         Logs.Debug($"MagicPromptExtension.InstructionResolver: instructionId='{instructionId ?? "(null)"}', using='{instructionKey}'");
 
+        return ResolveContent(instructionsObj, instructionKey, userInput, variables);
+    }
+
+    internal static string ResolveContent(JToken instructionsObj, string instructionKey, T2IParamInput userInput, IReadOnlyDictionary<string, string> variables = null)
+    {
         if (instructionsObj == null)
         {
-            return instructionKey;
+            return SubstituteVariables(instructionKey, userInput, variables);
         }
 
         if (string.IsNullOrWhiteSpace(instructionKey))
         {
-            return GetDefaultInstruction(instructionsObj);
+            return SubstituteVariables(GetDefaultInstruction(instructionsObj), userInput, variables);
         }
 
-        return TryGetCustomInstructionByKey(instructionsObj, instructionKey, userInput)
-            ?? TryGetCustomInstructionByTitle(instructionsObj, instructionKey, userInput)
+        var content = TryGetCustomInstructionByKey(instructionsObj, instructionKey)
+            ?? TryGetCustomInstructionByTitle(instructionsObj, instructionKey)
             ?? TryGetBaseInstruction(instructionsObj, instructionKey)
             ?? GetDefaultInstruction(instructionsObj);
+        return SubstituteVariables(content, userInput, variables);
     }
 
     /// <summary>
     /// Substitutes &lt;var:name&gt; tags in instructions with variable values from the prompt.
     /// Variables are set in the prompt using &lt;setvar[name]:value&gt; syntax.
     /// </summary>
-    public static string SubstituteVariables(string instructions, T2IParamInput userInput)
+    public static string SubstituteVariables(string instructions, T2IParamInput userInput, IReadOnlyDictionary<string, string> variables = null)
     {
         if (string.IsNullOrWhiteSpace(instructions) || !instructions.Contains("<var:"))
         {
             return instructions;
         }
 
-        if (!userInput.ExtraMeta.TryGetValue("mp_variables", out object variablesObj) ||
-            variablesObj is not Dictionary<string, string> variables ||
-            variables.Count == 0)
+        if (variables == null && userInput.ExtraMeta.TryGetValue("mp_variables", out object variablesObj))
+        {
+            variables = variablesObj as IReadOnlyDictionary<string, string>;
+        }
+        if (variables == null || variables.Count == 0)
         {
             return instructions;
         }
@@ -94,7 +102,7 @@ public static class InstructionResolver
         return instructionsObj["prompt"]?.ToString();
     }
 
-    private static string TryGetCustomInstructionByKey(JToken instructionsObj, string key, T2IParamInput userInput)
+    private static string TryGetCustomInstructionByKey(JToken instructionsObj, string key)
     {
         var customContent = instructionsObj["custom"]?[key]?["content"]?.ToString();
         if (string.IsNullOrWhiteSpace(customContent))
@@ -104,10 +112,10 @@ public static class InstructionResolver
 
         var title = instructionsObj["custom"]?[key]?["title"]?.ToString();
         Logs.Debug($"MagicPromptExtension.InstructionResolver: using custom instruction \"{title}\" (matched by key)");
-        return SubstituteVariables(customContent, userInput);
+        return customContent;
     }
 
-    private static string TryGetCustomInstructionByTitle(JToken instructionsObj, string titleToMatch, T2IParamInput userInput)
+    private static string TryGetCustomInstructionByTitle(JToken instructionsObj, string titleToMatch)
     {
         if (instructionsObj["custom"] is not JObject customObj)
         {
@@ -134,7 +142,7 @@ public static class InstructionResolver
             }
 
             Logs.Debug($"MagicPromptExtension.InstructionResolver: using custom instruction \"{title}\" (matched by title)");
-            return SubstituteVariables(content, userInput);
+            return content;
         }
 
         return null;

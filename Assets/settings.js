@@ -64,7 +64,7 @@ function mpSettingsStatus(message, error = false) {
 }
 
 function mpCurrentSettings() { return mpSettingsDraft || MP.settings; }
-function mpModelSelectOptionText(row) { return `${row.name || row.model}${row.costOut ? ` · ${row.costOut} / 1M out` : ''}`; }
+function mpModelSelectOptionText(row, showUnits = true) { return `${row.name || row.model}${row.costOut ? ` · ${row.costOut}${showUnits ? ' / 1M out' : ''}` : ''}`; }
 function mpCatalogKey(settings) { return `${settings.backend}\n${settings.backends[settings.backend]?.baseurl || ''}`; }
 function mpCatalog(settings = mpCurrentSettings()) { return MP.modelCatalogs?.[mpCatalogKey(settings)] || []; }
 
@@ -131,7 +131,7 @@ function mpFillModelSelect(select, settings, selected, preserveBlockedSelection 
     select.replaceChildren(new Option('Select a model', ''));
     for (const row of rows) {
         if (blocked.has(row.model) && row.model !== selected) continue;
-        const option = new Option(mpModelSelectOptionText(row), row.model);
+        const option = new Option(mpModelSelectOptionText(row, select.id !== 'input_mpmodelid'), row.model);
         if (blocked.has(row.model)) option.dataset.blocked = '1';
         if (favorites.has(row.model)) option.dataset.favorited = '1';
         if (select.id === 'modelSelect') {

@@ -279,13 +279,72 @@ function mpRefreshInstructionPrefixes() {
 
 window.mpRefreshInstructionPrefixes = mpRefreshInstructionPrefixes;
 
+/** Complete local variable names from the instruction selected for this tag. */
+function mpCompleteTagVariables(prompt, afterCursor) {
+    const start = prompt.toLowerCase().lastIndexOf('<mpprompt[');
+    if (start < 0) return null;
+    const header = prompt.slice(start + '<mpprompt['.length);
+    const parts = [];
+    let quoted = false;
+    let tagDepth = 0;
+    let segmentStart = 0;
+    for (let i = 0; i < header.length; i++) {
+        const char = header[i];
+        if (char === '\\' && /[<>"\\]/.test(header[i + 1] || '')) {
+            i++;
+        } else if (!quoted && char === '<' && /^<[A-Za-z][A-Za-z0-9_-]*(?:\[|:|>|$)/.test(header.slice(i))) {
+            tagDepth++;
+        } else if (tagDepth > 0) {
+            if (char === '>' && !/^>[:;=8xX][-^']?[()\[\]DPp/\\|oO]/.test(header.slice(i))) tagDepth--;
+        } else if (char === '"') {
+            quoted = !quoted;
+        } else if (!quoted && /[\]<>]/.test(char)) {
+            return null;
+        } else if (!quoted && (char === ';' || parts.length > 0 && char === ','
+            && /^\s*(?:[A-Za-z_][A-Za-z0-9_.-]*\s*=|[A-Za-z0-9_.-]*$)/.test(header.slice(i + 1)))) {
+            parts.push(header.slice(segmentStart, i));
+            segmentStart = i + 1;
+        }
+    }
+    // Let Swarm complete wildcard/variable names while the cursor is inside an assignment's tag.
+    if (tagDepth > 0) return null;
+    if (!parts.length) return null;
+    const partial = header.slice(segmentStart);
+    if (quoted || !/^\s*[A-Za-z0-9_.-]*$/.test(partial)) return [];
+    const positional = parts[0].split(/[,|]/);
+    let key = positional[0].trim();
+    if (!key || /^(true|false)$/i.test(key)) {
+        key = document.getElementById('input_mpinstructions')?.value || 'prompt';
+    }
+    const instructions = MP.settings?.instructions || {};
+    const custom = instructions.custom || {};
+    const instruction = custom[key] || Object.values(custom).find(item =>
+        item && !item.deleted && item.title?.toLowerCase() === key.toLowerCase());
+    const content = (instruction && !instruction.deleted ? instruction.content : instructions[key]) || instructions.prompt || '';
+    const names = [...new Set(Array.from(content.matchAll(/<var:([A-Za-z_][A-Za-z0-9_.-]*)>/gi), match => match[1]))];
+    const assigned = new Set(parts.slice(1).map(part => part.split('=')[0].trim()));
+    const query = partial.trim().toLowerCase();
+    // Swarm inserts raw completions starting at the last '<', including one inside a quoted value.
+    const tagStart = prompt.slice(prompt.lastIndexOf('<'), prompt.length - partial.length) + partial.match(/^\s*/)[0];
+    const equals = /^\s*=/.test(afterCursor) ? '' : '=';
+    return names.filter(name => !assigned.has(name) && name.toLowerCase().startsWith(query)).map(name => ({
+        raw: true,
+        name: `${tagStart}${name}${equals}`,
+        clean: `${name}=`,
+        desc: `Local to this tag; replaces <var:${name}> in instructions and prompt`
+    }));
+}
+
 // Swarm's prefix completers run after the colon. Model selection happens inside
 // the brackets, so handle that slot before delegating to the standard completion.
 (function () {
     const originalGetPossibleList = promptTabComplete.getPossibleList;
     promptTabComplete.getPossibleList = function (box) {
         const prompt = this.getPromptBeforeCursor(box);
-        const match = prompt.match(/<mpprompt\[([^\[\]<>,|]*),\s*([^\[\]<>,]*)$/i);
+        const afterCursor = getTextContent(box).substring(getTextSelRange(box)[0]);
+        const variables = mpCompleteTagVariables(prompt, afterCursor);
+        if (variables !== null) return variables;
+        const match = prompt.match(/<mpprompt\[([^\[\]<>,|;]*),\s*([^\[\]<>,;]*)$/i);
         if (!match) {
             return originalGetPossibleList.call(this, box);
         }
@@ -293,9 +352,8 @@ window.mpRefreshInstructionPrefixes = mpRefreshInstructionPrefixes;
         const select = document.getElementById('input_mpmodelid');
         const query = match[2].trim().toLowerCase();
         const tagStart = match[0].slice(0, match[0].length - match[2].length);
-        const afterCursor = getTextContent(box).substring(getTextSelRange(box)[0]);
         // Keep an existing bracket or output flag when completing inside a tag.
-        const ending = /^\s*[,\]]/.test(afterCursor) ? '' : ']:';
+        const ending = /^\s*[,;\]]/.test(afterCursor) ? '' : ']:';
 
         return Array.from(select?.options || [])
             .filter(option => option.value && option.value !== 'loading' && !option.disabled)

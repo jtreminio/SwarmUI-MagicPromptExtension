@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Text.RegularExpressions;
 using SwarmUI.Text2Image;
 using SwarmUI.Utils;
@@ -7,13 +8,32 @@ namespace Hartsy.Extensions.MagicPromptExtension;
 /// <summary>Protects literal angle brackets while Swarm expands tags inside MagicPrompt content.</summary>
 internal static class PromptTagSyntax
 {
-    internal static readonly Regex MppromptHeaderRegex = new(@"<mpprompt(?:\[([^\]]+)\])?(?:\|\s*((?:""[^""]+""\s*)(?:,\s*""[^""]+""\s*)*))?:", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    internal static readonly Regex MppromptHeaderRegex = new(@"<mpprompt(?:\[((?:[^""\[\]]|""(?:\\.|[^""\\])*""|(?<optionBracket>\[)|(?<-optionBracket>\]))*(?(optionBracket)(?!)))\])?(?:\|\s*((?:""[^""]+""\s*)(?:,\s*""[^""]+""\s*)*))?:", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     // Pre-data may itself contain tags, for example <repeat[<var:count>]:text>.
     private static readonly Regex TagHeaderRegex = new(@"\G<([a-zA-Z][a-zA-Z0-9_-]*)(?:\[(?:[^\[\]]|(?<bracket>\[)|(?<-bracket>\]))*(?(bracket)(?!))\])?(?::|(?=>))", RegexOptions.Compiled);
     private static readonly Regex GreaterThanEmoteRegex = new(@"\G>[:;=8xX][-^']?[()\[\]DPp/\\|oO]", RegexOptions.Compiled);
     private const string LiteralEscapeKey = "mp_literal_escape";
     private const string ParsedPromptsKey = "mp_parsed_prompts";
+    private const string TagVariablesKey = "mp_tag_variables";
     private const string ExplicitMppromptClose = "></mpprompt>";
+
+    internal static void ValidateHeaders(string prompt)
+    {
+        int end = 0;
+        foreach (Match opening in Regex.Matches(prompt, @"<mpprompt\[", RegexOptions.IgnoreCase))
+        {
+            if (opening.Index < end)
+            {
+                continue;
+            }
+            Match header = MppromptHeaderRegex.Match(prompt, opening.Index);
+            if (!header.Success || header.Index != opening.Index)
+            {
+                throw new SwarmReadableErrorException("MagicPrompt: invalid tag options. Close the bracket and any quoted value, then add ':' before the prompt.");
+            }
+            end = header.Index + header.Length;
+        }
+    }
 
     /// <summary>
     /// Accepts &gt;&lt;/mpprompt&gt; for ambiguous content, otherwise keeps the first closing bracket
@@ -105,7 +125,7 @@ internal static class PromptTagSyntax
             || prefix == "mporiginal";
     }
 
-    private static int FindNestedTagEnd(string prompt, int start, int depth = 0)
+    internal static int FindNestedTagEnd(string prompt, int start, int depth = 0)
     {
         if (depth > 1000)
         {
@@ -182,33 +202,65 @@ internal static class PromptTagSyntax
         return text;
     }
 
+    /// <summary>Expands a local assignment once, using the same literal-bracket protection as prompt content.</summary>
+    internal static string ParseVariableValue(string text, T2IPromptHandling.PromptTagContext context)
+    {
+        string escape = context.Input.ExtraMeta.TryGetValue(LiteralEscapeKey, out object value)
+            ? (string)value : $"__mp_literal_{Guid.NewGuid():N}_";
+        StringBuilder protectedValue = new();
+        ProtectContent(text, 0, text.Length, escape, protectedValue);
+        string protectedText = protectedValue.ToString();
+        if (protectedText != text)
+        {
+            context.Input.ExtraMeta[LiteralEscapeKey] = escape;
+        }
+        return context.Parse(protectedText);
+    }
+
     internal static void ClearParsingState(T2IParamInput input)
     {
         input.ExtraMeta.Remove(LiteralEscapeKey);
         input.ExtraMeta.Remove(ParsedPromptsKey);
+        input.ExtraMeta.Remove(TagVariablesKey);
+    }
+
+    internal static void SaveTagVariables(string token, Dictionary<string, string> variables, T2IParamInput input)
+    {
+        if (!input.ExtraMeta.TryGetValue(TagVariablesKey, out object value)
+            || value is not Dictionary<string, Dictionary<string, string>> snapshots)
+        {
+            snapshots = new();
+            input.ExtraMeta[TagVariablesKey] = snapshots;
+        }
+        snapshots[token] = variables.ToDictionary(pair => pair.Key, pair => RestoreLiteralBrackets(pair.Value, input));
+    }
+
+    internal static IReadOnlyDictionary<string, string> GetTagVariables(string token, T2IParamInput input)
+    {
+        return input.ExtraMeta.TryGetValue(TagVariablesKey, out object value)
+            && value is Dictionary<string, Dictionary<string, string>> snapshots
+            && snapshots.TryGetValue(token, out var variables) ? variables : null;
     }
 
     /// <summary>Keeps expanded wildcard/variable text opaque until the late LLM handler reads it.</summary>
     internal static string EncodeParsedPrompt(string text, T2IParamInput input)
     {
-        if (!input.ExtraMeta.TryGetValue(ParsedPromptsKey, out object value) || value is not Dictionary<string, string> encodedPrompts)
-        {
-            encodedPrompts = new();
-            input.ExtraMeta[ParsedPromptsKey] = encodedPrompts;
-        }
+        var encodedPrompts = input.ExtraMeta.GetValueOrDefault(ParsedPromptsKey) as ImmutableDictionary<string, string>
+            ?? ImmutableDictionary<string, string>.Empty;
         if (encodedPrompts.ContainsKey(text))
         {
             return text;
         }
         string encoded = $"__mp_parsed_prompt_{Guid.NewGuid():N}__";
-        encodedPrompts[encoded] = text;
+        // Batch inputs share ExtraMeta values through a shallow copy. Replace the map on this input only.
+        input.ExtraMeta[ParsedPromptsKey] = encodedPrompts.Add(encoded, text);
         return encoded;
     }
 
     internal static string DecodeParsedPrompt(string text, T2IParamInput input)
     {
         if (input.ExtraMeta.TryGetValue(ParsedPromptsKey, out object value)
-            && value is Dictionary<string, string> encodedPrompts && encodedPrompts.TryGetValue(text, out string decoded))
+            && value is ImmutableDictionary<string, string> encodedPrompts && encodedPrompts.TryGetValue(text, out string decoded))
         {
             text = decoded;
         }
@@ -219,7 +271,7 @@ internal static class PromptTagSyntax
     internal static string RestoreParsedPrompts(string text, T2IParamInput input)
     {
         if (input.ExtraMeta.TryGetValue(ParsedPromptsKey, out object value)
-            && value is Dictionary<string, string> encodedPrompts)
+            && value is ImmutableDictionary<string, string> encodedPrompts)
         {
             foreach (var pair in encodedPrompts)
             {

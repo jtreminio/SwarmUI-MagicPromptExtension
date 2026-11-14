@@ -43,19 +43,21 @@ public class PromptHandler
             return;
         }
 
-        var normalized = MpresponseRegex.Replace(prompt, match =>
+        PromptTagSyntax.ValidateHeaders(prompt);
+        var normalized = PromptTagSyntax.MppromptHeaderRegex.Replace(prompt, match =>
         {
-            if (!match.Groups[2].Success)
+            var raw = match.Groups[1].Value;
+            var options = PromptTagOptions.Parse(raw);
+            if (options.Variables.Count > 0)
             {
-                return match.Value;
+                // Keep assignments opaque until the tag installs its local variable scope.
+                if (match.Groups[2].Success)
+                {
+                    var filter = Convert.ToBase64String(Encoding.UTF8.GetBytes(match.Groups[2].Value));
+                    raw = options.Positional + $",{InlinePostFilterTokenPrefix}{filter}" + raw[raw.IndexOf(';')..];
+                }
+                return $"<mpprompt[{PromptTagSyntax.EncodeParsedPrompt(raw, userInput)}]:";
             }
-
-            var encodedFilter = Convert.ToBase64String(Encoding.UTF8.GetBytes(match.Groups[2].Value));
-            return $"<mpresponse[{InlinePostFilterTokenPrefix}{encodedFilter}]:{match.Groups[3].Value}>";
-        });
-
-        normalized = PromptTagSyntax.MppromptHeaderRegex.Replace(normalized, match =>
-        {
             if (!match.Groups[2].Success)
             {
                 return match.Value;
@@ -67,6 +69,17 @@ public class PromptHandler
                 ? $"{match.Groups[1].Value},{filterToken}"
                 : filterToken;
             return $"<mpprompt[{preData}]:";
+        });
+
+        normalized = MpresponseRegex.Replace(normalized, match =>
+        {
+            if (!match.Groups[2].Success)
+            {
+                return match.Value;
+            }
+
+            var encodedFilter = Convert.ToBase64String(Encoding.UTF8.GetBytes(match.Groups[2].Value));
+            return $"<mpresponse[{InlinePostFilterTokenPrefix}{encodedFilter}]:{match.Groups[3].Value}>";
         });
 
         normalized = PromptTagSyntax.ProtectLiteralBrackets(normalized, userInput);
@@ -164,7 +177,7 @@ public class PromptHandler
         {
             var match = matches[i];
             var fullTag = match.Value;
-            var preDataRaw = match.Groups[1].Success ? match.Groups[1].Value : null;
+            var preDataRaw = PromptTagOptions.Parse(PromptTagSyntax.DecodeParsedPrompt(match.Groups[1].Value, userInput)).Positional;
             var inlinePostFilterRaw = match.Groups[2].Success ? match.Groups[2].Value : null;
             ParsePreData(preDataRaw, inlinePostFilterRaw, out string instructionId, out string modelSpec, out bool printResponse, out string inlinePostFilter);
             var mppromptContent = ResolveMpresponseReferences(PromptTagSyntax.DecodeParsedPrompt(match.Groups[3].Value, userInput), llmResponses);
@@ -179,7 +192,8 @@ public class PromptHandler
                 var effectiveModelId = string.IsNullOrWhiteSpace(tagModelId) ? modelId : tagModelId;
                 modelsUsed.Add(effectiveModelId);
 
-                llmResponse = GetLlmResponse(mppromptContent, userInput, instructionId, effectiveModelId, useCache, i, fullTag, inlinePostFilter);
+                var variables = PromptTagSyntax.GetTagVariables(match.Groups[3].Value, userInput);
+                llmResponse = GetLlmResponse(mppromptContent, userInput, instructionId, effectiveModelId, useCache, i, fullTag, inlinePostFilter, variables);
             }
             llmResponses.Add(llmResponse);
             prompt = printResponse
@@ -192,7 +206,7 @@ public class PromptHandler
         FinalizePrompt(prompt, firstMppromptContent, userInput);
     }
 
-    private string GetLlmResponse(string content, T2IParamInput userInput, string instructionId, string modelId, bool useCache, int tagIndex, string fullTag, string inlinePostFilter)
+    private string GetLlmResponse(string content, T2IParamInput userInput, string instructionId, string modelId, bool useCache, int tagIndex, string fullTag, string inlinePostFilter, IReadOnlyDictionary<string, string> variables)
     {
         string response = null;
         string error = null;
@@ -201,7 +215,7 @@ public class PromptHandler
             var timeoutMs = LLMAPICalls.GetChatBackendTimeoutMs(out var backendIdentity);
             var thinking = userInput.Get(_paramThinking, defVal: "none");
             var seed = userInput.Get(T2IParamTypes.Seed, -1);
-            var instructions = InstructionResolver.Resolve(userInput, instructionId, _paramInstructions);
+            var instructions = InstructionResolver.Resolve(userInput, instructionId, _paramInstructions, variables);
             response = _cache.GetOrCreate(content, instructions, modelId, thinking, backendIdentity, seed, useCache,
                 () => MakeLlmRequest(content, userInput, instructions, modelId, thinking), timeoutMs, userInput.InterruptToken, out error);
         }

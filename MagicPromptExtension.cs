@@ -99,6 +99,7 @@ public class MagicPromptExtension : Extension
             Group: paramGroup,
             OrderPriority: 5,
             ViewType: ParamViewType.BIG,
+            HideFromMetadata: true,
             Toggleable: true
         ));
 
@@ -146,14 +147,40 @@ public class MagicPromptExtension : Extension
     private static string ProcessMppromptTag(string data, T2IPromptHandling.PromptTagContext context)
     {
         var instructionPart = !string.IsNullOrEmpty(context.PreData) ? $"[{context.PreData}]" : "";
-        var parsedData = context.Parse(data);
+        // Enclosing repeat/random tags can cause Swarm to visit an already expanded tag again.
+        if (PromptTagSyntax.GetTagVariables(data, context.Input) != null)
+        {
+            return $"<mpprompt{instructionPart}:{data}>";
+        }
+        var options = PromptTagOptions.Parse(PromptTagSyntax.DecodeParsedPrompt(context.PreData ?? "", context.Input));
+        var outerVariables = context.Variables;
+        string token;
+        try
+        {
+            if (options.Variables.Count > 0)
+            {
+                context.Variables = new(outerVariables);
+                foreach (var pair in options.Variables)
+                {
+                    // Resolve left to right, so later assignments can reference globals or earlier local values.
+                    context.Variables[pair.Key] = PromptTagSyntax.ParseVariableValue(pair.Value, context);
+                }
+            }
+            var parsedData = context.Parse(data);
+            token = PromptTagSyntax.EncodeParsedPrompt(parsedData, context.Input);
+            PromptTagSyntax.SaveTagVariables(token, context.Variables, context.Input);
+        }
+        finally
+        {
+            context.Variables = outerVariables;
+        }
         if (context.Variables.Count > 0 && context.Input != null)
         {
             context.Input.ExtraMeta["mp_variables"] = context.Variables.ToDictionary(
                 pair => pair.Key, pair => PromptTagSyntax.RestoreLiteralBrackets(pair.Value, context.Input));
         }
 
-        return $"<mpprompt{instructionPart}:{PromptTagSyntax.EncodeParsedPrompt(parsedData, context.Input)}>";
+        return $"<mpprompt{instructionPart}:{token}>";
     }
 
     private static string ProcessMpresponseTag(string data, T2IPromptHandling.PromptTagContext context)
