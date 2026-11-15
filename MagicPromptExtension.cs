@@ -18,6 +18,9 @@ public class MagicPromptExtension : Extension
     private static T2IRegisteredParam<string> _paramThinking;
     private static T2IRegisteredParam<string> _paramOnError;
     private static T2IRegisteredParam<bool> _paramDisableLlmRequest;
+    private static T2IRegisteredParam<bool> _paramDecisionChecks;
+    private static T2IRegisteredParam<string> _paramDecisionQuestion;
+    private System.Diagnostics.Process _decisionRuntime;
 
     public override void OnPreInit()
     {
@@ -29,6 +32,14 @@ public class MagicPromptExtension : Extension
     {
         MagicPromptAPI.Register();
         RegisterT2IParameters();
+        _decisionRuntime = DecisionRuntimeHost.Start(FilePath, Program.ServerSettings.Paths.ModelRoot);
+    }
+
+    public override void OnShutdown()
+    {
+        DecisionRuntimeHost.Stop(_decisionRuntime);
+        _decisionRuntime?.Dispose();
+        _decisionRuntime = null;
     }
 
     private void RegisterAssets()
@@ -37,6 +48,7 @@ public class MagicPromptExtension : Extension
         ScriptFiles.Add("Assets/settings.js");
         ScriptFiles.Add("Assets/modeldropdown.js");
         ScriptFiles.Add("Assets/prompthistory.js");
+        ScriptFiles.Add("Assets/decisionhistory.js");
         StyleSheetFiles.Add("Assets/settings.css");
         StyleSheetFiles.Add("Assets/modeldropdown.css");
         StyleSheetFiles.Add("Assets/prompthistory.css");
@@ -136,6 +148,25 @@ public class MagicPromptExtension : Extension
             OrderPriority: 4
         ));
 
+        _paramDecisionChecks = T2IParamTypes.Register<bool>(new T2IParamType(
+            Name: "MP Decision Checks",
+            Description: "Run the selected decision questions on newly fetched remote LLM responses using local CPU inference. Results are logged for comparison.",
+            Default: "false",
+            IgnoreIf: "false",
+            Group: paramGroup,
+            OrderPriority: 4.1
+        ));
+        _paramDecisionQuestion = T2IParamTypes.Register<string>(new T2IParamType(
+            Name: "MP Decision Question",
+            Description: "Choose one saved question to run with MP Decision Checks, or use the default questions selected in MagicPrompt Settings.",
+            Default: "",
+            IgnoreIf: "",
+            Group: paramGroup,
+            ValidateValues: false,
+            GetValues: ModelListProvider.GetDecisionQuestions,
+            OrderPriority: 4.2
+        ));
+
         PromptRegion.RegisterCustomPrefix("mpprompt");
         PromptRegion.RegisterCustomPrefix("mpresponse");
         T2IPromptHandling.PromptTagPostProcessors["mpprompt"] = ProcessMppromptTag;
@@ -193,7 +224,7 @@ public class MagicPromptExtension : Extension
     {
         T2IParamInput.LateSpecialParameterHandlers.Add(userInput =>
         {
-            var handler = new PromptHandler(_promptCache, _paramUseCache, _paramModelId, _paramInstructions, _paramPostFilter, _paramThinking, _paramOnError, _paramDisableLlmRequest);
+            var handler = new PromptHandler(_promptCache, _paramUseCache, _paramModelId, _paramInstructions, _paramPostFilter, _paramThinking, _paramOnError, _paramDisableLlmRequest, _paramDecisionChecks, _paramDecisionQuestion);
             handler.ProcessPrompt(userInput);
         });
     }

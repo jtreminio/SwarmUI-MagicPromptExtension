@@ -165,6 +165,7 @@ public class SessionSettings : MagicPromptAPI
     {
         ["backend"] = "openrouter",
         ["model"] = "",
+        ["decisions"] = DecisionEvaluator.NormalizeSettings(null),
         ["instructions"] = new JObject
         {
             ["prompt"] = "You are a prompt enhacing assistent. The user will give you a prompt, and its your job to convert it into an actually useful prompt.\n\nHere are examples:\nUser:\npinkie pie and rarity standing in the water, worried.\n\nYour Enhanced Prompt:\nPinkie Pie stands on a beach, arms outstretched as if floating above the water's surface. Rarity, who is submerged up to her head, looks up at her with a concerned expression. The sky is clear and blue, with a few clouds scattered across it. The ocean below is calm, mirroring the serene atmosphere. Both characters are part of the \"My Little Pony: Friendship Is Magic\" series. Rarity has dark purple hair with a light blue tail and horn. Pinkie Pie has bright pink skin, a large head, and her hair is styled into a curly bun. They appear to be in the middle of a conversation or an emotional moment. Caption: \"An emotional scene on a sunny beach where Pinkie Pie appears to be floating while Rarity looks concerned.\"\n\nUser:\ncomic of tracer from overwatch stuck inside a spinning washing machine while mercy is pointing and laughing on the side\n\nYour Enhanced Prompt:\nA high-quality digital illustration in a modern western cartoon style, reminiscent of a high-end webcomic. The artwork features bold, clean lineart and vibrant, cel-shaded colors.\nThe scene depicts the Overwatch character Tracer, trapped and spinning inside a white front-loading washing machine. She is seen through the round glass door, her hands splayed against it in panic. Her mouth is wide open in a scream, and her signature orange goggles show large, hypnotic orange and white swirls, indicating she is extremely dizzy. She is wearing her classic brown leather flight jacket over an orange shirt.\nStanding next to the machine is the Overwatch character Mercy, who is laughing uncontrollably at Tracer's predicament. Mercy is bent over, clutching her stomach with one hand while pointing a finger directly at Tracer with the other. Her eyes are squeezed shut with mirth, and her mouth is open in a huge laugh. She is wearing her iconic white and gold Valkyrie suit with her yellow mechanical wings visible.\nTo emphasize the action, the inside of the washing machine drum has subtle motion blur and faint speed lines, suggesting a rapid spin cycle. Floating in the air next to Mercy's head is the onomatopoeia \"HA HA\" written in a bold, white, outlined comic book font.\nThe background is a simple laundry room with light aquamarine or green tiled walls.\n\nReply with only the enhanced prompt. Do not explain yourself.",
@@ -254,6 +255,7 @@ public class SessionSettings : MagicPromptAPI
                 settings["backends"] = backendsConfig;
             }
             RemoveUnsupportedBackends(settings);
+            settings["decisions"] = DecisionEvaluator.NormalizeSettings(settings["decisions"]);
             NormalizeBlockedModels(settings);
             NormalizeFavoritedModels(settings);
             EnforceBlockFavoriteExclusivity(settings);
@@ -370,6 +372,7 @@ public class SessionSettings : MagicPromptAPI
             newSettings = existingSettings["settings"] as JObject ?? [];
             // Merge in new settings
             MergeSettings(newSettings, settings["settings"] as JObject);
+            newSettings["decisions"] = DecisionEvaluator.NormalizeSettings(newSettings["decisions"]);
             RemoveUnsupportedBackends(newSettings);
             if (newSettings["baseurl"] != null)
             {

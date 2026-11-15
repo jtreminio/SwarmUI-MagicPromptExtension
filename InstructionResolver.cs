@@ -10,8 +10,12 @@ public static class InstructionResolver
 {
     public static string Resolve(T2IParamInput userInput, string instructionId, T2IRegisteredParam<string> paramInstructions, IReadOnlyDictionary<string, string> variables = null)
     {
+        return Resolve(GetInstructionsObject(), userInput, instructionId, paramInstructions, variables);
+    }
+
+    internal static string Resolve(JToken instructionsObj, T2IParamInput userInput, string instructionId, T2IRegisteredParam<string> paramInstructions, IReadOnlyDictionary<string, string> variables)
+    {
         var instructionKey = GetInstructionKey(userInput, instructionId, paramInstructions);
-        var instructionsObj = GetInstructionsObject();
 
         Logs.Debug($"MagicPromptExtension.InstructionResolver: instructionId='{instructionId ?? "(null)"}', using='{instructionKey}'");
 

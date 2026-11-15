@@ -96,6 +96,8 @@ function addSidebarSettingsLink() {
         }
         group.append(createDiv(linkId, 'keep_group_visible',
             `<button type="button" class="basic-button" onclick="showSettingsModal()">MagicPrompt Settings</button>`));
+        group.append(createDiv('magicprompt_decision_history_link', 'keep_group_visible',
+            `<button type="button" class="basic-button" onclick="mpShowDecisionHistory(this)">Decision History</button>`));
     };
     if (typeof postParamBuildSteps !== 'undefined') {
         postParamBuildSteps.push(build);
@@ -185,6 +187,22 @@ if (typeof getFormattedMetadataEntries === 'function') {
     getFormattedMetadataEntries = function (metadata) {
         const formatted = originalGetFormattedMetadataEntries(metadata);
         const entries = formatted.entries;
+        const decisionsIndex = entries.findIndex(entry => entry.id === 'mp_decisions');
+        if (decisionsIndex >= 0 && typeof mpDecisionAnswer === 'function') {
+            try {
+                const records = JSON.parse(entries[decisionsIndex].compareValue);
+                const summaries = records.map(record => {
+                    const title = record.decision?.title || record.decision?.question || `Tag ${record.tag_index + 1}`;
+                    const model = record.source?.model ? ` · ${record.source.model}` : '';
+                    return `${title} — ${mpDecisionAnswer(record)}${model}`;
+                });
+                const replacement = originalGetFormattedMetadataEntries(JSON.stringify({
+                    sui_image_params: {}, sui_extra_data: { 'MP Decisions': summaries.join('\n') }
+                })).entries;
+                if (replacement.length) entries.splice(decisionsIndex, 1, ...replacement);
+            }
+            catch { /* Keep Swarm's generic metadata display for invalid records. */ }
+        }
         const variablesIndex = entries.findIndex(entry => entry.id === 'mp_variables');
         if (variablesIndex < 0) {
             return formatted;
@@ -235,6 +253,7 @@ document.addEventListener("DOMContentLoaded", async function () {
         addSidebarSettingsLink();
         // Initialize settings
         await loadSettings();
+        mpInstallDecisionControlHandling();
         if (typeof postParamBuildSteps !== 'undefined') postParamBuildSteps.push(() => updateModelListOnLeft(true));
         updateModelListOnLeft(true);
         // Populate instruction prefixes for autocomplete

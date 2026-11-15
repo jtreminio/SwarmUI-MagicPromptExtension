@@ -27,6 +27,10 @@ public class PromptHandler
     private readonly T2IRegisteredParam<string> _paramThinking;
     private readonly T2IRegisteredParam<string> _paramOnError;
     private readonly T2IRegisteredParam<bool> _paramDisableLlmRequest;
+    private readonly T2IRegisteredParam<bool> _paramDecisionChecks;
+    private readonly T2IRegisteredParam<string> _paramDecisionQuestion;
+    private sealed record PromptRequest(JObject SettingsResponse, int TimeoutMs, string BackendIdentity,
+        bool CheckDecisions, DecisionEvaluator.Selection Decisions);
 
     public const string OnErrorSkip = "skip";
     public const string OnErrorFallback = "fallback";
@@ -104,7 +108,9 @@ public class PromptHandler
         T2IRegisteredParam<string> paramPostFilter,
         T2IRegisteredParam<string> paramThinking,
         T2IRegisteredParam<string> paramOnError,
-        T2IRegisteredParam<bool> paramDisableLlmRequest)
+        T2IRegisteredParam<bool> paramDisableLlmRequest,
+        T2IRegisteredParam<bool> paramDecisionChecks = null,
+        T2IRegisteredParam<string> paramDecisionQuestion = null)
     {
         _cache = cache;
         _paramUseCache = paramUseCache;
@@ -114,6 +120,8 @@ public class PromptHandler
         _paramThinking = paramThinking;
         _paramOnError = paramOnError;
         _paramDisableLlmRequest = paramDisableLlmRequest;
+        _paramDecisionChecks = paramDecisionChecks;
+        _paramDecisionQuestion = paramDecisionQuestion;
     }
 
     /// <summary>
@@ -172,6 +180,7 @@ public class PromptHandler
         var firstMppromptContent = PromptTagSyntax.DecodeParsedPrompt(matches[0].Groups[3].Value, userInput);
         var llmResponses = new List<string>();
         var modelsUsed = new List<string>();
+        PromptRequest request = disableLlmRequest ? null : PrepareRequest(userInput);
 
         for (int i = 0; i < matches.Count; i++)
         {
@@ -193,7 +202,7 @@ public class PromptHandler
                 modelsUsed.Add(effectiveModelId);
 
                 var variables = PromptTagSyntax.GetTagVariables(match.Groups[3].Value, userInput);
-                llmResponse = GetLlmResponse(mppromptContent, userInput, instructionId, effectiveModelId, useCache, i, fullTag, inlinePostFilter, variables);
+                llmResponse = GetLlmResponse(mppromptContent, userInput, instructionId, effectiveModelId, useCache, i, fullTag, inlinePostFilter, variables, request);
             }
             llmResponses.Add(llmResponse);
             prompt = printResponse
@@ -206,18 +215,34 @@ public class PromptHandler
         FinalizePrompt(prompt, firstMppromptContent, userInput);
     }
 
-    private string GetLlmResponse(string content, T2IParamInput userInput, string instructionId, string modelId, bool useCache, int tagIndex, string fullTag, string inlinePostFilter, IReadOnlyDictionary<string, string> variables)
+    private PromptRequest PrepareRequest(T2IParamInput userInput)
+    {
+        JObject response = SessionSettings.GetMagicPromptSettings().GetAwaiter().GetResult();
+        JObject settings = response["settings"] as JObject;
+        int timeoutMs = LLMAPICalls.GetChatBackendTimeoutMs(settings, out string backendIdentity, out string endpoint);
+        bool checkDecisions = _paramDecisionChecks != null && userInput.Get(_paramDecisionChecks, defVal: false);
+        string selectedId = checkDecisions && _paramDecisionQuestion != null ? userInput.Get(_paramDecisionQuestion, defVal: "") : "";
+        DecisionEvaluator.Selection selection = checkDecisions ? DecisionEvaluator.ResolveSelection(settings?["decisions"], selectedId, endpoint) : null;
+        return new PromptRequest(response, timeoutMs, backendIdentity, checkDecisions, selection);
+    }
+
+    private string GetLlmResponse(string content, T2IParamInput userInput, string instructionId, string modelId, bool useCache, int tagIndex, string fullTag, string inlinePostFilter, IReadOnlyDictionary<string, string> variables, PromptRequest request)
     {
         string response = null;
         string error = null;
+        JObject decisionMatch = null;
         try
         {
-            var timeoutMs = LLMAPICalls.GetChatBackendTimeoutMs(out var backendIdentity);
             var thinking = userInput.Get(_paramThinking, defVal: "none");
             var seed = userInput.Get(T2IParamTypes.Seed, -1);
-            var instructions = InstructionResolver.Resolve(userInput, instructionId, _paramInstructions, variables);
-            response = _cache.GetOrCreate(content, instructions, modelId, thinking, backendIdentity, seed, useCache,
-                () => MakeLlmRequest(content, userInput, instructions, modelId, thinking), timeoutMs, userInput.InterruptToken, out error);
+            var instructions = InstructionResolver.Resolve(request.SettingsResponse["settings"]?["instructions"], userInput, instructionId, _paramInstructions, variables);
+            JObject fetched = null;
+            bool includeDecisionSource = request.Decisions?.Questions.Length > 0;
+            response = _cache.GetOrCreate(content, instructions, modelId, thinking, request.BackendIdentity, seed, useCache,
+                () => MakeLlmRequest(content, userInput, instructions, modelId, thinking, includeDecisionSource, request.SettingsResponse, out fetched),
+                request.TimeoutMs, userInput.InterruptToken, out error, requireFresh: request.Decisions?.RequiresFreshResponse == true);
+            if (request.CheckDecisions && !string.IsNullOrEmpty(response))
+                decisionMatch = DecisionEvaluator.Observe(fetched, userInput, tagIndex, request.Decisions);
         }
         catch (OperationCanceledException) when (userInput.InterruptToken.IsCancellationRequested)
         {
@@ -228,12 +253,23 @@ public class PromptHandler
             error = ex.Message;
         }
 
+        SkipForDecision(decisionMatch, tagIndex);
         if (string.IsNullOrEmpty(response))
         {
             return HandleFailedResponse(content, userInput, tagIndex, fullTag, error);
         }
 
         return ApplyPostFilter(response, userInput, inlinePostFilter);
+    }
+
+    internal static void SkipForDecision(JObject match, int tagIndex)
+    {
+        if (match == null) return;
+        string message = $"MagicPrompt: Skipped generation for tag #{tagIndex} because decision '{match["decision"]?["title"]}' matched Skip If '{match["skip_if"]}'.";
+        // Swarm's pre-backend handler logs this once and skips just the current batch slot.
+        var skip = new SwarmReadableErrorException(message);
+        skip.Data["SwarmUI.SkipGeneration"] = true;
+        throw skip;
     }
 
     /// <summary>
@@ -254,7 +290,8 @@ public class PromptHandler
         throw new SwarmReadableErrorException($"MagicPrompt: LLM request failed for tag #{tagIndex}, skipping this generation. {reason}");
     }
 
-    private static string MakeLlmRequest(string prompt, T2IParamInput userInput, string instructions, string modelId, string thinking)
+    private static string MakeLlmRequest(string prompt, T2IParamInput userInput, string instructions, string modelId, string thinking,
+        bool includeDecisionSource, JObject settingsResponse, out JObject fetched)
     {
         var request = new JObject
         {
@@ -270,18 +307,18 @@ public class PromptHandler
             ["thinking"] = thinking
         };
 
-        var resp = LLMAPICalls.MagicPromptPhoneHomeForGeneration(request, userInput.SourceSession, userInput.InterruptToken)
+        fetched = LLMAPICalls.MagicPromptPhoneHomeForGeneration(request, userInput.SourceSession, userInput.InterruptToken, includeDecisionSource, settingsResponse)
             .GetAwaiter()
             .GetResult();
 
-        var success = resp?["success"];
+        var success = fetched?["success"];
         if (success == null || !success.Value<bool>())
         {
-            var error = resp?["error"]?.ToString();
+            var error = fetched?["error"]?.ToString();
             throw new SwarmReadableErrorException(string.IsNullOrWhiteSpace(error) ? "LLM backend returned an unspecified error" : error);
         }
 
-        var llmResponse = resp?["response"]?.ToString();
+        var llmResponse = fetched?["response"]?.ToString();
         return string.IsNullOrWhiteSpace(llmResponse) ? null : llmResponse;
     }
 

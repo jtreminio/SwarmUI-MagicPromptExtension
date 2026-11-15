@@ -29,6 +29,10 @@ function mpNormalizeSettings(settings) {
     result.backends.openaiapi ||= { baseurl: 'http://localhost:11434', timeout: 120 };
     result.instructions ||= {};
     result.instructions.custom ||= {};
+    result.decisions ||= {
+        evaluator: 'startlux',
+        questions: [{ id: 'refusal', title: 'Prompt refusal', question: 'Did this response refuse to generate the requested prompt?', type: 'noul', options: [], selected: true }]
+    };
     for (const key of ['blockedModels', 'favoritedModels']) {
         result[key] ||= {};
         for (const backend of MP_BACKENDS) {
@@ -108,6 +112,84 @@ function updateModelListOnLeft(preserveSelection = true) {
         }
         if ([...instructions.options].some(option => option.value === previous)) instructions.value = previous;
         triggerChangeFor(instructions);
+    }
+    mpRefreshDecisionControls();
+}
+
+const mpDecisionSelections = new WeakMap();
+
+function mpRememberDecisionSelection(select) {
+    if (!mpDecisionSelections.has(select)) {
+        select.addEventListener('change', () => mpRememberDecisionSelection(select));
+    }
+    mpDecisionSelections.set(select, select.dataset.wantsValue || select.value);
+}
+
+function mpAddUnavailableDecisionOption(select, value) {
+    if (value && !Array.from(select.options).some(option => option.value === value)) {
+        select.add(new Option(`Saved question unavailable (${value}) — reselect`, value));
+    }
+}
+
+/** Keep Swarm's parameter definition and both rendered pickers in sync. */
+function mpRefreshDecisionControls() {
+    const questions = MP.settings.decisions?.questions || [];
+    const defaults = questions.some(question => question.selected)
+        ? 'Settings defaults' : 'Settings defaults (none selected)';
+    const param = typeof gen_param_types !== 'undefined' && gen_param_types?.find(row => row.id === 'mpdecisionquestion');
+    if (param) {
+        param.values = ['', ...questions.map(question => question.id)];
+        param.value_names = [defaults, ...questions.map(question => question.title || question.question)];
+    }
+    for (const prefix of ['input_', 'preset_input_']) {
+        const checkbox = document.getElementById(`${prefix}mpdecisionchecks`);
+        checkbox?.setAttribute('aria-label', 'MP Decision Checks');
+        const select = document.getElementById(`${prefix}mpdecisionquestion`);
+        if (!select) continue;
+        select.setAttribute('aria-label', 'MP Decision Question');
+        const previous = select.dataset.wantsValue || select.value;
+        select.replaceChildren(new Option(defaults, ''));
+        for (const question of questions) select.add(new Option(question.title || question.question, question.id));
+        mpAddUnavailableDecisionOption(select, previous);
+        select.value = previous;
+        delete select.dataset.wantsValue;
+        mpRememberDecisionSelection(select);
+        triggerChangeFor(select);
+    }
+}
+
+function mpInstallDecisionControlHandling() {
+    // Swarm otherwise defers a preset question ID that has no option.
+    if (typeof setDirectParamValue === 'function') {
+        const setParam = setDirectParamValue;
+        setDirectParamValue = function (param, value, element, ...rest) {
+            const select = param.id === 'mpdecisionquestion' && (element || document.getElementById('input_mpdecisionquestion'));
+            if (select?.tagName !== 'SELECT') return setParam.call(this, param, value, element, ...rest);
+            mpAddUnavailableDecisionOption(select, value);
+            delete select.dataset.wantsValue;
+            const result = setParam.call(this, param, value, element, ...rest);
+            mpRememberDecisionSelection(select);
+            return result;
+        };
+    }
+    // Native value refresh rewrites both pickers using the Generate value.
+    if (typeof refreshParameterValues === 'function') {
+        const refresh = refreshParameterValues;
+        refreshParameterValues = function (strong, type, callback) {
+            const selects = document.querySelectorAll('#input_mpdecisionquestion, #preset_input_mpdecisionquestion');
+            selects.forEach(mpRememberDecisionSelection);
+            return refresh.call(this, strong, type, () => {
+                for (const select of selects) {
+                    if (!select.isConnected) continue;
+                    const value = mpDecisionSelections.get(select);
+                    mpAddUnavailableDecisionOption(select, value);
+                    if (select.value === value) continue;
+                    select.value = value;
+                    triggerChangeFor(select);
+                }
+                callback?.();
+            });
+        };
     }
 }
 
@@ -334,6 +416,7 @@ function initSettingsModal() {
           <button type="button" role="tab" id="mpTabProvider" aria-controls="mpPanelProvider" aria-selected="true" data-mp-tab="Provider">Provider</button>
           <button type="button" role="tab" id="mpTabModels" aria-controls="mpPanelModels" aria-selected="false" tabindex="-1" data-mp-tab="Models">Models</button>
           <button type="button" role="tab" id="mpTabInstructions" aria-controls="mpPanelInstructions" aria-selected="false" tabindex="-1" data-mp-tab="Instructions">Instructions</button>
+          <button type="button" role="tab" id="mpTabDecisions" aria-controls="mpPanelDecisions" aria-selected="false" tabindex="-1" data-mp-tab="Decisions">Decisions</button>
         </div>
         <div class="modal-body">
           <section id="mpPanelProvider" role="tabpanel" aria-labelledby="mpTabProvider">
@@ -361,6 +444,21 @@ function initSettingsModal() {
                 <div class="mp-toolbar"><button type="button" class="basic-button" id="mpExportInstruction">Export</button><button type="button" class="basic-button mp-danger" id="mpDeleteInstruction">Delete</button></div>
                 <details class="mp-ai-generator"><summary>Draft with AI</summary><label class="mp-field" for="mpInstructionBrief">Describe the instruction<textarea class="form-control" id="mpInstructionBrief" rows="3"></textarea></label><button type="button" class="basic-button" id="mpGenerateInstruction">Generate draft</button><p class="mp-muted">Uses your saved provider and default model. Review the generated text before saving.</p></details>
               </div></div>
+          </section>
+          <section id="mpPanelDecisions" role="tabpanel" aria-labelledby="mpTabDecisions" hidden>
+            <div class="mp-section-heading"><div><h6>Decision questions</h6><p class="mp-muted">Give questions titles so you can pick them on Generate.</p></div><button type="button" class="basic-button" id="mpNewDecision">Add question</button></div>
+            <label class="mp-field">Local decision model<select id="mpDecisionEvaluator" class="form-select"><option value="startlux">StartLux Decision 0.8B (Q8_0)</option><option value="jev">Jev Style Decision 2B (Q8_0)</option></select></label>
+            <div id="mpDecisionQuestions"></div>
+            <template id="mpDecisionQuestionTemplate"><fieldset class="mp-decision-question">
+              <legend>Decision question</legend>
+              <label class="mp-field">Title<input class="form-control mp-decision-title" maxlength="100" placeholder="Prompt refusal"></label>
+              <label><input class="mp-decision-selected" type="checkbox"> Include in Settings defaults</label>
+              <label class="mp-field">Question<textarea class="form-control mp-decision-text" rows="2" maxlength="2000"></textarea></label>
+              <label class="mp-field">Answer type<select class="form-select mp-decision-type"><option value="noul">Yes or no</option><option value="choice">Multiple choice</option><option value="score">Rating</option></select></label>
+              <label class="mp-field mp-decision-options-field">Answer options<textarea class="form-control mp-decision-options" rows="3"></textarea><span class="mp-muted"></span></label>
+              <div class="mp-field"><label class="mp-decision-skip-label">Skip If</label><input class="form-control mp-decision-skip-if" maxlength="500"><span class="mp-muted mp-decision-skip-help"></span></div>
+              <button type="button" class="basic-button mp-danger mp-remove-decision">Remove question</button>
+            </fieldset></template>
           </section>
         </div>
         <div class="modal-footer"><span id="mpSettingsStatus" role="status" aria-live="polite"></span><button type="button" class="basic-button" data-bs-dismiss="modal">Cancel</button><button type="button" class="basic-button mp-primary" id="mpSaveSettings">Save and close</button></div>
@@ -401,9 +499,17 @@ function initSettingsModal() {
             event.preventDefault();
             const tabs = [...modal.querySelectorAll('[data-mp-tab]')];
             let index = tabs.indexOf(button);
-            index = event.key === 'Home' ? 0 : event.key === 'End' ? 2 : (index + (event.key === 'ArrowRight' ? 1 : 2)) % 3;
+            index = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1
+                : (index + (event.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length;
             tabs[index].click(); tabs[index].focus();
         });
+    });
+    document.getElementById('mpNewDecision').addEventListener('click', () => {
+        const list = document.getElementById('mpDecisionQuestions');
+        if (list.childElementCount < 32) {
+            const id = `decision-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+            mpAddDecisionQuestion({ id, title: '', question: '', type: 'noul', options: [], selected: true }).focus();
+        }
     });
     document.getElementById('mpBackend').addEventListener('change', event => {
         mpCaptureProvider(false);
@@ -554,6 +660,72 @@ function mpRenderInstruction() {
     document.getElementById('mpInstructionContent').value = instruction.content || '';
     document.getElementById('mpDeleteInstruction').hidden = builtin;
 }
+function mpAddDecisionQuestion(decision) {
+    const row = document.getElementById('mpDecisionQuestionTemplate').content.firstElementChild.cloneNode(true);
+    row.dataset.decisionId = decision.id;
+    row.querySelector('.mp-decision-selected').checked = decision.selected;
+    const title = row.querySelector('.mp-decision-title');
+    title.value = decision.title ?? decision.question.slice(0, 90);
+    const question = row.querySelector('.mp-decision-text');
+    const type = row.querySelector('.mp-decision-type');
+    const options = row.querySelector('.mp-decision-options');
+    const skipIf = row.querySelector('.mp-decision-skip-if');
+    const skipHelp = row.querySelector('.mp-decision-skip-help');
+    skipIf.id = `mp-decision-skip-${decision.id}`;
+    skipHelp.id = `${skipIf.id}-help`;
+    row.querySelector('.mp-decision-skip-label').htmlFor = skipIf.id;
+    skipIf.setAttribute('aria-describedby', skipHelp.id);
+    skipIf.value = decision.skipIf || '';
+    question.value = decision.question;
+    type.value = decision.type;
+    options.value = decision.options.join('\n');
+    const hints = {
+        noul: 'Optional. Enter descriptions for No and Yes on separate lines, in that order.',
+        choice: 'Enter 2–26 distinct options, one per line.',
+        score: 'Enter 2–10 levels, one per line from lowest to highest.'
+    };
+    const updateHint = () => {
+        row.querySelector('.mp-decision-options-field .mp-muted').textContent = hints[type.value];
+        skipIf.disabled = type.value === 'score';
+        skipIf.placeholder = type.value === 'noul' ? 'yes or no' : type.value === 'choice' ? 'One exact choice label' : '';
+        skipHelp.textContent = skipIf.disabled ? 'Ratings do not support skipping.' : 'Leave blank to keep generating after any answer.';
+    };
+    type.addEventListener('change', updateHint);
+    updateHint();
+    row.querySelector('.mp-remove-decision').addEventListener('click', () => {
+        row.remove();
+        document.getElementById('mpNewDecision').focus();
+    });
+    document.getElementById('mpDecisionQuestions').append(row);
+    return title;
+}
+
+function mpCaptureDecisions() {
+    const questions = Array.from(document.getElementById('mpDecisionQuestions').children, row => ({
+        id: row.dataset.decisionId,
+        title: row.querySelector('.mp-decision-title').value.trim(),
+        question: row.querySelector('.mp-decision-text').value.trim(),
+        type: row.querySelector('.mp-decision-type').value,
+        options: row.querySelector('.mp-decision-options').value.split('\n').map(option => option.trim()).filter(Boolean),
+        skipIf: row.querySelector('.mp-decision-skip-if:enabled')?.value.trim() || '',
+        selected: row.querySelector('.mp-decision-selected').checked
+    }));
+    const titles = questions.map(row => row.title.toLowerCase());
+    if (titles.some(title => !title) || new Set(titles).size !== titles.length) {
+        mpSelectSettingsTab('Decisions');
+        throw new Error('Give every question a unique title.');
+    }
+    for (const { question, type, options } of questions) {
+        const validCount = type === 'noul' ? [0, 2].includes(options.length)
+            : options.length >= 2 && options.length <= (type === 'score' ? 10 : 26);
+        if (!question || !validCount || new Set(options).size !== options.length || options.some(option => option.length > 500)) {
+            mpSelectSettingsTab('Decisions');
+            throw new Error('Enter a question and follow its answer option instructions. Each option must be distinct and at most 500 characters.');
+        }
+    }
+    mpSettingsDraft.decisions = { evaluator: document.getElementById('mpDecisionEvaluator').value, questions };
+}
+
 async function showSettingsModal() {
     initSettingsModal();
     const modal = document.getElementById('settingsModal');
@@ -567,6 +739,9 @@ async function showSettingsModal() {
     mpEditingInstruction = 'prompt';
     document.getElementById('mpInstructionSearch').value = '';
     mpRenderProvider(); renderModelSettings(); renderInstructionList(); mpRenderInstruction();
+    document.getElementById('mpDecisionEvaluator').value = mpSettingsDraft.decisions.evaluator;
+    document.getElementById('mpDecisionQuestions').replaceChildren();
+    mpSettingsDraft.decisions.questions.forEach(mpAddDecisionQuestion);
     mpSelectSettingsTab('Provider'); mpSettingsStatus('Changes apply when you save.');
     mpSettingsOpening = true; mpSettingsCloseQueued = false;
     (bootstrap.Modal.getInstance(modal) || new bootstrap.Modal(modal)).show();
@@ -581,6 +756,7 @@ async function saveSettings() {
     if (mpSettingsBusy || !mpSettingsDraft) return;
     try {
         mpCaptureInstruction(); mpCaptureProvider(true);
+        mpCaptureDecisions();
         for (const [id, instruction] of Object.entries(mpSettingsDraft.instructions.custom)) {
             if (!instruction.deleted && (!instruction.title?.trim() || !instruction.content?.trim())) {
                 mpEditingInstruction = id; mpSelectSettingsTab('Instructions'); renderInstructionList(); mpRenderInstruction();

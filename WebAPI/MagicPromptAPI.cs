@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.Html;
 using System.Net;
 using System.Text.RegularExpressions;
 using System.Linq;
+using System.Globalization;
 
 namespace Hartsy.Extensions.MagicPromptExtension.WebAPI;
 
@@ -21,6 +22,7 @@ public static class MagicPromptPermissions
     public static readonly PermInfo PermReadConfig = Permissions.Register(new("magicprompt_read_config", "Read Configuration", "Allows the user to read configuration settings.", PermissionDefault.POWERUSERS, MagicPromptPermGroup));
     public static readonly PermInfo PermGetModels = Permissions.Register(new("magicprompt_get_models", "Get Models", "Allows the user to retrieve the list of available models.", PermissionDefault.POWERUSERS, MagicPromptPermGroup));
     public static readonly PermInfo PermResetConfig = Permissions.Register(new("magicprompt_reset_config", "Reset Configuration", "Allows the user to reset configuration settings.", PermissionDefault.POWERUSERS, MagicPromptPermGroup));
+    public static readonly PermInfo PermReadDecisionHistory = Permissions.Register(new("magicprompt_read_decision_history", "Read Decision History", "Allows the user to view shared model decision results.", PermissionDefault.POWERUSERS, MagicPromptPermGroup));
 }
 
 [API.APIClass("API routes related to MagicPromptExtension extension")]
@@ -34,6 +36,7 @@ public class MagicPromptAPI
         API.RegisterAPICall(SessionSettings.SaveMagicPromptSettings, false, MagicPromptPermissions.PermSaveConfig);
         API.RegisterAPICall(SessionSettings.ResetMagicPromptSettings, false, MagicPromptPermissions.PermResetConfig);
         API.RegisterAPICall(LLMAPICalls.GetMagicPromptModels, true, MagicPromptPermissions.PermGetModels);
+        API.RegisterAPICall(GetMagicPromptDecisionHistory, false, MagicPromptPermissions.PermReadDecisionHistory);
         // All key types must be added to the accepted list first
         string[] keyTypes = ["openrouter_api", "openaiapi_local"];
         foreach (string keyType in keyTypes)
@@ -45,6 +48,14 @@ public class MagicPromptAPI
             new HtmlString("To use OpenRouter models in MagicPrompt, you must set your OpenRouter API key. OpenRouter gives you access to many different models through a single API."));
         RegisterApiKeyIfNeeded("openaiapi_local", "openaiapi", "OpenAI API (Local)", "#",
             new HtmlString("For connecting to local servers that implement the OpenAI API schema (like LM Studio, text-generation-webui, or LocalAI). You may need to provide API keys or connection details depending on your local setup."));
+    }
+
+    public static Task<JObject> GetMagicPromptDecisionHistory(string endDate, int days, string seriesId, int offset)
+    {
+        if (!DateOnly.TryParseExact(endDate, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateOnly end)
+            || days is not (7 or 30 or 90) || offset < 0 || seriesId?.Length > 64)
+            return Task.FromResult(CreateErrorResponse("Choose a valid decision history date range."));
+        return Task.FromResult(DecisionHistory.Read(end, days, seriesId, offset));
     }
 
     /// <summary>Safely registers an API key if it's not already registered</summary>

@@ -7,6 +7,7 @@ async page => {
   await page.locator('#magicprompt_sidebar_settings_link button').click();
   await page.locator('#settingsModal.show').waitFor();
   await page.getByRole('tab',{name:'Instructions',exact:true}).click();
+  check(await page.getByRole('tabpanel',{name:'Instructions',exact:true}).getByRole('textbox',{name:'Skip If',exact:true}).count()===0,'Skip If leaked into Instructions');
   await page.getByRole('button',{name:'New instruction',exact:true}).click();
   await page.locator('#mpInstructionTitle').fill('Browser regression');
   await page.locator('#mpInstructionContent').fill('Preserve this exact custom instruction.');

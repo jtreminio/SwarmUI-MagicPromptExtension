@@ -261,18 +261,23 @@ public class LLMAPICalls : MagicPromptAPI
     /// <summary>Gets the chat timeout and a stable identity for the configured backend endpoint.</summary>
     public static int GetChatBackendTimeoutMs(out string backendIdentity)
     {
+        JObject response = SessionSettings.GetMagicPromptSettings().GetAwaiter().GetResult();
+        return GetChatBackendTimeoutMs(response?["settings"] as JObject, out backendIdentity, out _);
+    }
+
+    internal static int GetChatBackendTimeoutMs(JObject settings, out string backendIdentity, out string endpoint)
+    {
         backendIdentity = string.Empty;
+        endpoint = string.Empty;
         try
         {
-            var sessionSettings = SessionSettings.GetMagicPromptSettings().GetAwaiter().GetResult();
-            if (sessionSettings?["success"]?.Value<bool>() != true)
+            string backend = ((string)settings?["backend"])?.ToLowerInvariant();
+            if (string.IsNullOrEmpty(backend))
             {
                 return 90_000;
             }
-
-            var settings = sessionSettings["settings"] as JObject;
-            var backend = settings?["backend"]?.ToString()?.ToLower();
-            backendIdentity = $"{backend}\n{GetEndpoint(backend, settings, "chat")}";
+            endpoint = GetEndpoint(backend, settings, "chat");
+            backendIdentity = $"{backend}\n{endpoint}";
             int defaultTimeout = backend == "openaiapi" ? 120 : 60;
             int timeoutSec = GetBackendTimeout(settings, backend, defaultTimeout);
 
@@ -334,12 +339,12 @@ public class LLMAPICalls : MagicPromptAPI
         }
     }
 
-    internal static Task<JObject> MagicPromptPhoneHomeForGeneration(JObject requestData, Session session, CancellationToken interruptToken)
+    internal static Task<JObject> MagicPromptPhoneHomeForGeneration(JObject requestData, Session session, CancellationToken interruptToken, bool includeDecisionSource, JObject settingsResponse)
     {
-        return MagicPromptPhoneHomeInternal(requestData, session, interruptToken);
+        return MagicPromptPhoneHomeInternal(requestData, session, interruptToken, includeDecisionSource, settingsResponse);
     }
 
-    private static async Task<JObject> MagicPromptPhoneHomeInternal(JObject requestData, Session session, CancellationToken interruptToken)
+    private static async Task<JObject> MagicPromptPhoneHomeInternal(JObject requestData, Session session, CancellationToken interruptToken, bool includeDecisionSource = false, JObject settingsResponse = null)
     {
         try
         {
@@ -371,7 +376,7 @@ public class LLMAPICalls : MagicPromptAPI
                 return CreateErrorResponse("Message content is missing");
             }
             // Get current settings
-            JObject sessionSettings = await SessionSettings.GetMagicPromptSettings();
+            JObject sessionSettings = settingsResponse ?? await SessionSettings.GetMagicPromptSettings();
             if (!sessionSettings["success"].Value<bool>())
             {
                 Logs.Error($"MagicPromptExtension.LLMAPICalls: {sessionSettings["error"]?.ToString() ?? "Failed to load settings"}");
@@ -436,8 +441,10 @@ public class LLMAPICalls : MagicPromptAPI
                 Logs.Debug($"[MagicPrompt] Using timeout of {timeoutSec} seconds for {backend}");
                 using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSec));
                 using var requestCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, interruptToken);
-                HttpResponseMessage response = await HttpClient.SendAsync(request, requestCts.Token);
+                var requestStarted = System.Diagnostics.Stopwatch.StartNew();
+                using HttpResponseMessage response = await HttpClient.SendAsync(request, requestCts.Token);
                 string responseContent = await response.Content.ReadAsStringAsync(requestCts.Token);
+                double latency = requestStarted.Elapsed.TotalMilliseconds;
                 // Handle API errors indicated by status code
                 if (!response.IsSuccessStatusCode)
                 {
@@ -452,7 +459,12 @@ public class LLMAPICalls : MagicPromptAPI
                     string llmResponse = await DeserializeResponse(response, backend);
                     if (!string.IsNullOrEmpty(llmResponse))
                     {
-                        return CreateSuccessResponse(llmResponse);
+                        JObject result = CreateSuccessResponse(llmResponse);
+                        if (includeDecisionSource)
+                        {
+                            DecisionEvaluator.CaptureSource(result, responseContent, endpoint, backend, modelId, latency);
+                        }
+                        return result;
                     }
                 }
                 catch (Exception ex)

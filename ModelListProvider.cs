@@ -131,6 +131,16 @@ public static class ModelListProvider
         return ids;
     }
 
+    public static List<string> GetDecisionQuestions(Session session)
+    {
+        JObject settings = SessionSettings.GetMagicPromptSettings().GetAwaiter().GetResult()["settings"] as JObject;
+        JArray questions = settings?["decisions"]?["questions"] as JArray ?? [];
+        List<string> options = [questions.Any(row => (bool?)row["selected"] == true)
+            ? "///Settings defaults" : "///Settings defaults (none selected)"];
+        options.AddRange(questions.Select(row => $"{row["id"]}///{row["title"]}"));
+        return options;
+    }
+
     public static List<string> GetInstructionList(Session session)
     {
         var defaultResponse = new List<string> { LoadingPlaceholder };

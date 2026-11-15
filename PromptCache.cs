@@ -24,7 +24,7 @@ public class PromptCache
     private sealed record PendingResult(string Value, string Error);
 
     /// <summary>A null seed represents normal cache mode, which reuses responses across image seeds.</summary>
-    private readonly record struct CacheKey(string Prompt, string Instructions, string ModelId, string Backend, string Thinking, long? Seed);
+    private readonly record struct CacheKey(string Prompt, string Instructions, string ModelId, string Backend, string Thinking, long? Seed, Guid? FreshRequestId);
 
     public PromptCache(int maxSize = 1000)
     {
@@ -56,7 +56,14 @@ public class PromptCache
     /// </summary>
     public string GetOrCreate(string prompt, string instructionId, string modelId, string thinking, string backend, long seed, bool useCache, Func<string> createValue, int timeoutMs, CancellationToken cancellationToken, out string error)
     {
+        return GetOrCreate(prompt, instructionId, modelId, thinking, backend, seed, useCache, createValue, timeoutMs, cancellationToken, out error, requireFresh: false);
+    }
+
+    internal string GetOrCreate(string prompt, string instructionId, string modelId, string thinking, string backend, long seed, bool useCache, Func<string> createValue, int timeoutMs, CancellationToken cancellationToken, out string error, bool requireFresh)
+    {
         var cacheKey = BuildCacheKey(prompt, instructionId, modelId, backend, thinking, useCache ? null : seed);
+        // Each Skip If check needs its own fetch, including when another generation uses the same seed.
+        if (requireFresh) cacheKey = cacheKey with { FreshRequestId = Guid.NewGuid() };
         var effectiveTimeout = timeoutMs > 0 ? timeoutMs : DefaultTimeoutMs;
         error = null;
 
@@ -166,7 +173,7 @@ public class PromptCache
                 {
                     if (result != null)
                     {
-                        AddToCacheLocked(cacheKey, result);
+                        if (!requireFresh) AddToCacheLocked(cacheKey, result);
                         _attemptCounts.Remove(cacheKey);
                     }
 
@@ -230,7 +237,8 @@ public class PromptCache
             string.IsNullOrWhiteSpace(thinking) || thinking.Equals("none", StringComparison.OrdinalIgnoreCase)
                 ? string.Empty
                 : thinking.ToLowerInvariant(),
-            seed);
+            seed,
+            null);
     }
 
     private static string NormalizePrompt(string prompt)

@@ -22,6 +22,7 @@ internal static class PromptTagChecks
         var onError = Parameter<string>("mponerror");
         var disableLlm = Parameter<bool>("disablellmrequest");
         var handler = new PromptHandler(new PromptCache(), useCache, model, instructions, postFilter, thinking, onError, disableLlm);
+        DecisionChecks.Run().GetAwaiter().GetResult();
         int passed = 0;
 
         void Equal(string expected, string actual, string name)
