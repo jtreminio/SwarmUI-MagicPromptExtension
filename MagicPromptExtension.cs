@@ -19,8 +19,8 @@ public class MagicPromptExtension : Extension
     private static T2IRegisteredParam<string> _paramOnError;
     private static T2IRegisteredParam<bool> _paramDisableLlmRequest;
     private static T2IRegisteredParam<bool> _paramDecisionChecks;
+    private static T2IRegisteredParam<string> _paramDecisionModelId;
     private static T2IRegisteredParam<string> _paramDecisionQuestion;
-    private System.Diagnostics.Process _decisionRuntime;
 
     public override void OnPreInit()
     {
@@ -32,14 +32,6 @@ public class MagicPromptExtension : Extension
     {
         MagicPromptAPI.Register();
         RegisterT2IParameters();
-        _decisionRuntime = DecisionRuntimeHost.Start(FilePath, Program.ServerSettings.Paths.ModelRoot);
-    }
-
-    public override void OnShutdown()
-    {
-        DecisionRuntimeHost.Stop(_decisionRuntime);
-        _decisionRuntime?.Dispose();
-        _decisionRuntime = null;
     }
 
     private void RegisterAssets()
@@ -150,11 +142,21 @@ public class MagicPromptExtension : Extension
 
         _paramDecisionChecks = T2IParamTypes.Register<bool>(new T2IParamType(
             Name: "MP Decision Checks",
-            Description: "Run the selected decision questions on newly fetched remote LLM responses using local CPU inference. Results are logged for comparison.",
+            Description: "Run the selected decision questions on newly fetched remote LLM responses. Results are logged for comparison.",
             Default: "false",
             IgnoreIf: "false",
             Group: paramGroup,
             OrderPriority: 4.1
+        ));
+        _paramDecisionModelId = T2IParamTypes.Register<string>(new T2IParamType(
+            Name: "MP Decision Model ID",
+            Description: "Choose an OpenRouter decision model for this generation or use the default from MagicPrompt Settings.",
+            Default: "",
+            IgnoreIf: "",
+            Group: paramGroup,
+            ValidateValues: false,
+            GetValues: ModelListProvider.GetDecisionModelList,
+            OrderPriority: 4.2
         ));
         _paramDecisionQuestion = T2IParamTypes.Register<string>(new T2IParamType(
             Name: "MP Decision Question",
@@ -164,7 +166,7 @@ public class MagicPromptExtension : Extension
             Group: paramGroup,
             ValidateValues: false,
             GetValues: ModelListProvider.GetDecisionQuestions,
-            OrderPriority: 4.2
+            OrderPriority: 4.3
         ));
 
         PromptRegion.RegisterCustomPrefix("mpprompt");
@@ -224,7 +226,8 @@ public class MagicPromptExtension : Extension
     {
         T2IParamInput.LateSpecialParameterHandlers.Add(userInput =>
         {
-            var handler = new PromptHandler(_promptCache, _paramUseCache, _paramModelId, _paramInstructions, _paramPostFilter, _paramThinking, _paramOnError, _paramDisableLlmRequest, _paramDecisionChecks, _paramDecisionQuestion);
+            var handler = new PromptHandler(_promptCache, _paramUseCache, _paramModelId, _paramInstructions, _paramPostFilter,
+                _paramThinking, _paramOnError, _paramDisableLlmRequest, _paramDecisionChecks, _paramDecisionQuestion, _paramDecisionModelId);
             handler.ProcessPrompt(userInput);
         });
     }

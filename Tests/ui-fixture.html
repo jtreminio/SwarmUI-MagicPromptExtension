@@ -7,12 +7,17 @@
 window.postParamBuildSteps=[];
 window.setDirectParamValue=(param,value,element)=>{if(![...element.options].some(option=>option.value===value)){element.dataset.wantsValue=value;return}element.value=value;};
 window.refreshParameterValues=(strong,type,callback)=>setTimeout(()=>{
- const {values,value_names}=gen_param_types.find(param=>param.id==='mpdecisionquestion');
- const generate=document.getElementById('input_mpdecisionquestion');
- const previous=generate.value;
- for(const select of [generate,document.getElementById('preset_input_mpdecisionquestion')]){
-  select.replaceChildren(...values.map((value,index)=>new Option(value_names[index],value)));
-  select.value=previous;
+ for(const id of ['mpdecisionquestion','mpdecisionmodelid']){
+  const param=gen_param_types.find(param=>param.id===id);
+  if(!param)continue;
+  const {values,value_names}=param;
+  const previous=document.getElementById('input_'+id)?.value;
+  for(const prefix of ['input_','preset_input_']){
+   const select=document.getElementById(prefix+id);
+   if(!select)continue;
+   select.replaceChildren(...values.map((value,index)=>new Option(value_names[index],value)));
+   select.value=previous;
+  }
  }
  callback?.();
 },20);
@@ -25,15 +30,20 @@ window.showError=text=>{window.testErrors.push(text)};window.testErrors=[];
 window.mainGenHandler={doGenerate(overrides,pre,callback){callback({prompt:document.getElementById('alt_prompt_textbox').value})}};
 window.testSettings={backend:'openrouter',model:'google/model-a',backends:{openrouter:{baseurl:'https://openrouter.ai',timeout:90},openaiapi:{baseurl:'http://localhost:1234',timeout:120}},blockedModels:{openrouter:['old/model'],openaiapi:[]},favoritedModels:{openrouter:['google/model-a'],openaiapi:[]},instructions:{prompt:'Rewrite the supplied prompt with concrete visual details.',randomprompt:'Write a random visual prompt.',instructiongen:'Write a system prompt.',custom:Object.fromEntries(Array.from({length:35},(_,i)=>['custom-'+i,{id:'custom-'+i,title:['Cinematic','Video','Illustration','Portrait','Landscape'][i%5]+' '+(i+1),content:'Create a detailed scene with clear lighting, composition, and atmosphere.\n\nPreserve the subjects and actions from the original prompt.',tooltip:'An instruction for image generation',categories:['prompt']}]))}};
 window.testModels=[{model:'google/model-a',name:'Google: Fast model',costOut:'$1.5'},{model:'local/model-b',name:'Local model',costOut:'$0.3'},{model:'old/model',name:'Older model',costOut:'$2'},...Array.from({length:100},(_,i)=>({model:'provider/model-'+i,name:'Provider: Model '+i,costOut:'$0.5'}))];
+window.testDecisionModels=[{model:'typesafe/old',name:'TypeSafe: Older decision',created:1,decisionModel:true,costIn:'$0.1',costOut:'$0',costRequest:'$0'}, {model:'typesafe/new',name:'TypeSafe: New decision',created:20,decisionModel:true,costIn:'$0.2',costOut:'$0',costRequest:'$0'}, {model:'parallel/decision',name:'Parallel: Decision',created:30,decisionModel:true,costIn:'$0',costOut:'$0',costRequest:'$0.001'}];
 window.testWrites=[];
 window.genericRequest=(route,payload,done,depth,fail)=>setTimeout(()=>{
  if(route==='GetMagicPromptSettings')return done({success:true,settings:structuredClone(testSettings)});
+ if(route==='GetMagicPromptDecisionModels')return done({success:true,models:structuredClone(testDecisionModels)});
  if(route==='GetMagicPromptModels')return done({success:true,models:structuredClone(testModels)});
  if(route==='GetMagicPromptDecisionHistory')return done({success:true,series:[],selected:'',models:[],rows:[],total:0,page_size:25,...structuredClone(window.testDecisionHistory)});
  if(route==='SaveMagicPromptSettings'){
   if(window.failSave)return fail('Simulated save failure');
   testWrites.push(structuredClone(payload));
-  testSettings={...testSettings,...structuredClone(payload.settings)};
+  const incoming=structuredClone(payload.settings);
+  if(incoming.decisions)incoming.decisions={...testSettings.decisions,...incoming.decisions};
+  testSettings={...testSettings,...incoming};
+  if(testSettings.decisions?.blockedModels?.includes(testSettings.decisions.model))testSettings.decisions.model='';
   for(const [id,value]of Object.entries(testSettings.instructions.custom))if(value.deleted)delete testSettings.instructions.custom[id];
   return done({success:true,settings:structuredClone(testSettings)});
  }
@@ -41,4 +51,4 @@ window.genericRequest=(route,payload,done,depth,fail)=>setTimeout(()=>{
 },20);
 </script>
 <script src="/swarm/js/genpage/helpers/ui_improvements.js"></script><script src="/Assets/magicprompt.js"></script><script src="/Assets/settings.js"></script><script src="/Assets/modeldropdown.js"></script><script src="/Assets/prompthistory.js"></script><script src="/Assets/decisionhistory.js"></script>
-</head><body><main id="main_inputs_area" class="fixture-background"><h2>Generate</h2><div id="input_group_content_magicpromptautoenable"></div><textarea id="alt_prompt_textbox" rows="5">Current prompt</textarea><textarea id="input_prompt" hidden></textarea><select id="input_mpmodelid"><option value="google/model-a">Google: Fast model</option></select><select id="input_mpinstructions"><option value="custom-2">Illustration 3</option></select><select id="input_mpdecisionquestion"></select></main></body></html>
+</head><body><main id="main_inputs_area" class="fixture-background"><h2>Generate</h2><div id="input_group_content_magicpromptautoenable"></div><textarea id="alt_prompt_textbox" rows="5">Current prompt</textarea><textarea id="input_prompt" hidden></textarea><select id="input_mpmodelid"><option value="google/model-a">Google: Fast model</option></select><select id="input_mpinstructions"><option value="custom-2">Illustration 3</option></select><select id="input_mpdecisionmodelid"><option value="">Settings default</option></select><select id="input_mpdecisionquestion"></select></main></body></html>

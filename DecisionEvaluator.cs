@@ -1,6 +1,6 @@
 using System.Diagnostics;
 using System.IO;
-using System.Net.Http;
+using Hartsy.Extensions.MagicPromptExtension.WebAPI;
 using System.Security.Cryptography;
 using System.Text;
 using Newtonsoft.Json;
@@ -12,11 +12,6 @@ namespace Hartsy.Extensions.MagicPromptExtension;
 
 internal static class DecisionEvaluator
 {
-    private static readonly HttpClient Client = new(new HttpClientHandler { UseProxy = false, AllowAutoRedirect = false })
-    {
-        Timeout = TimeSpan.FromSeconds(90)
-    };
-
     internal static void CaptureSource(JObject result, string providerJson, string endpoint, string provider, string requestedModel, double latencyMs)
     {
         if (!IsRemoteEndpoint(endpoint)) return;
@@ -47,13 +42,16 @@ internal static class DecisionEvaluator
         if (config == null)
         {
             return JObject.Parse("""
-                {"evaluator":"startlux","questions":[{"id":"refusal","title":"Prompt refusal","question":"Did this response refuse to generate the requested prompt?","type":"noul","options":[],"selected":true}]}
+                {"model":"","favoritedModels":[],"blockedModels":[],"questions":[{"id":"refusal","title":"Prompt refusal","question":"Did this response refuse to generate the requested prompt?","type":"noul","options":[],"selected":true}]}
                 """);
         }
         if (config is not JObject obj || obj["questions"] is not JArray questions || questions.Count > 32)
             throw new ArgumentException("Decision settings need a list of up to 32 questions.");
-        string evaluator = (string)obj["evaluator"];
-        if (evaluator is not ("startlux" or "jev")) throw new ArgumentException("Select a local decision model.");
+        string model = obj["model"]?.Type == JTokenType.String ? ((string)obj["model"]).Trim() : "";
+        JArray blocked = NormalizeModelIds(obj["blockedModels"]);
+        JArray favorites = new(NormalizeModelIds(obj["favoritedModels"]).Values<string>()
+            .Where(id => !blocked.Values<string>().Contains(id, StringComparer.OrdinalIgnoreCase)));
+        if (blocked.Values<string>().Contains(model, StringComparer.OrdinalIgnoreCase)) model = "";
 
         JArray normalized = [];
         HashSet<string> ids = new(StringComparer.Ordinal);
@@ -96,8 +94,11 @@ internal static class DecisionEvaluator
                 ["selected"] = (bool?)row["selected"] ?? false, ["skipIf"] = SkipValue(row)
             });
         }
-        return new JObject { ["evaluator"] = evaluator, ["questions"] = normalized };
+        return new JObject { ["model"] = model, ["favoritedModels"] = favorites, ["blockedModels"] = blocked, ["questions"] = normalized };
     }
+
+    private static JArray NormalizeModelIds(JToken value) => new((value as JArray ?? []).Where(id => id.Type == JTokenType.String)
+        .Values<string>().Select(id => id.Trim()).Where(id => id.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase));
 
     private static string SkipValue(JObject question) => (string)question["type"] is "noul" or "choice"
         && question["skipIf"]?.Type == JTokenType.String ? ((string)question["skipIf"]).Trim() : "";
@@ -110,7 +111,7 @@ internal static class DecisionEvaluator
         internal bool RequiresFreshResponse { get; } = Questions.Any(question => SkipValue(question).Length > 0);
     }
 
-    internal static Selection ResolveSelection(JToken config, string selectedId, string endpoint)
+    internal static Selection ResolveSelection(JToken config, string selectedId, string endpoint, string selectedModel = "")
     {
         if (!IsRemoteEndpoint(endpoint)) return null;
         bool useDefaults = string.IsNullOrEmpty(selectedId);
@@ -118,11 +119,18 @@ internal static class DecisionEvaluator
             useDefaults ? (bool?)question["selected"] == true : (string)question["id"] == selectedId).ToArray();
         if (selected.Length == 0 && !useDefaults)
             throw new SwarmReadableErrorException("MagicPrompt: The saved decision question is unavailable. Choose another MP Decision Question on Generate.");
-        return new Selection((string)config["evaluator"], selected);
+        string modelOverride = selectedModel?.Trim() ?? "";
+        string model = modelOverride.Length > 0 ? modelOverride : (string)config["model"];
+        bool blocked = (config["blockedModels"] as JArray ?? []).Values<string>().Contains(model, StringComparer.OrdinalIgnoreCase);
+        if (modelOverride.Length > 0 && blocked)
+            throw new SwarmReadableErrorException($"MagicPrompt: Decision model '{model}' is blocked in Settings → Decision Models. Choose an unblocked MP Decision Model ID on Generate.");
+        if (selected.Length > 0 && (string.IsNullOrWhiteSpace(model) || blocked))
+            throw new SwarmReadableErrorException("MagicPrompt: Choose an unblocked MP Decision Model ID on Generate or set a default in Settings → Decision Models.");
+        return new Selection(model, selected);
     }
 
     /// <summary>Records checks for the provider response and returns the first match that must skip generation.</summary>
-    internal static JObject Observe(JObject fetched, T2IParamInput input, int tagIndex, Selection selection)
+    internal static JObject Observe(JObject fetched, T2IParamInput input, int tagIndex, Selection selection, JObject settings)
     {
         if (selection == null || selection.Questions.Length == 0)
         {
@@ -138,7 +146,8 @@ internal static class DecisionEvaluator
         try
         {
             List<JObject> records = [];
-            JObject match = EvaluateAsync(fetched, selection, tagIndex, RequestAsync, record =>
+            JObject match = EvaluateAsync(fetched, selection, tagIndex,
+                (request, token) => OpenRouterDecisions.RequestAsync(request, token, settings, input.SourceSession), record =>
             {
                 records.Add(record);
                 try { DecisionHistory.Append(record); }
@@ -156,7 +165,7 @@ internal static class DecisionEvaluator
         catch (Exception ex)
         {
             AddNote(input, tagIndex, "error", "Could not run decision checks. See SwarmUI logs.");
-            Logs.Warning($"MagicPrompt: could not record local decision checks: {ex.Message}");
+            Logs.Warning($"MagicPrompt: could not record decision checks: {ex.Message}");
             return null;
         }
     }
@@ -212,9 +221,9 @@ internal static class DecisionEvaluator
                 interruptToken.ThrowIfCancellationRequested();
                 if (response["error"] != null || response["answer"] is not JValue answer || answer.Type == JTokenType.Null
                     || string.IsNullOrWhiteSpace((string)response["evaluator_model"]))
-                    throw new InvalidOperationException((string)response["error"] ?? "Decision runtime returned an incomplete result.");
+                    throw new InvalidOperationException((string)response["error"] ?? "Decision model returned an incomplete result.");
                 record["status"] = "ok";
-                foreach (string key in new[] { "answer", "probabilities", "evaluator_model", "metrics", "confidence" })
+                foreach (string key in new[] { "answer", "probabilities", "evaluator_model", "metrics", "confidence", "evaluator_source" })
                     if (response[key] is JToken value) record[key] = value.DeepClone();
             }
             catch (OperationCanceledException) when (interruptToken.IsCancellationRequested)
@@ -225,7 +234,7 @@ internal static class DecisionEvaluator
             catch (Exception ex)
             {
                 record["status"] = "error";
-                record["error"] = ex is OperationCanceledException ? "Decision runtime timed out" : ex.Message;
+                record["error"] = ex is OperationCanceledException ? "Decision model timed out" : ex.Message;
             }
             record["latency_ms"] = elapsed.Elapsed.TotalMilliseconds;
             string skipIf = (string)question["skipIf"];
@@ -252,18 +261,4 @@ internal static class DecisionEvaluator
         };
     }
 
-    internal static async Task<JObject> RequestAsync(JObject request, CancellationToken token)
-    {
-        using StringContent body = new(request.ToString(Formatting.None), Encoding.UTF8, "application/json");
-        using HttpResponseMessage response = await Client.PostAsync("http://127.0.0.1:7893/v1/decisions", body, token).ConfigureAwait(false);
-        string json = await response.Content.ReadAsStringAsync(token).ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode)
-        {
-            string error = null;
-            try { error = (string)JObject.Parse(json)["error"]; }
-            catch (JsonException) { }
-            throw new InvalidOperationException(error ?? $"Decision runtime returned HTTP {(int)response.StatusCode}.");
-        }
-        return JObject.Parse(json);
-    }
 }

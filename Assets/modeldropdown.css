@@ -4,7 +4,7 @@
 /* Hide SwarmUI's auto-generated select. We keep the element in the DOM so the
    T2I parameter framework can still read its value, but our trigger button
    takes over the visual slot. */
-#input_mpmodelid {
+#input_mpmodelid, #input_mpdecisionmodelid {
     display: none !important;
 }
 
@@ -43,7 +43,7 @@
 }
 
 .mp-model-dropdown-popover,
-#popover_uiimprover_modelSelect {
+:is(#popover_uiimprover_modelSelect, #popover_uiimprover_mpDecisionModelSelect) {
     background-color: var(--background);
     border: 1px solid var(--shadow);
     border-radius: 0.5rem;
@@ -73,6 +73,27 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+button.mp-model-dropdown-row-label {
+    border: 0;
+    padding: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+button.mp-model-dropdown-row-label:focus-visible,
+.mp-model-dropdown-trigger:focus-visible {
+    outline: 2px solid var(--emphasis);
+    outline-offset: 2px;
+}
+
+.mp-model-dropdown-trigger[aria-invalid="true"] {
+    color: var(--danger-color, #e78383);
+    border-color: var(--danger-color, #e78383);
 }
 
 .mp-model-dropdown-star {
@@ -159,14 +180,14 @@
 
 /* Share the sidebar's menu styling with Swarm's default-model popover and the
    checkbox preference pickers. Only the selection controls differ. */
-#popover_uiimprover_modelSelect { width: var(--mp-model-menu-width, auto) !important; max-width: calc(100vw - 16px); }
-#popover_uiimprover_modelSelect .sui_popover_model_button:has(.mp-model-dropdown-row) { padding: 0; border-radius: .25rem; }
+:is(#popover_uiimprover_modelSelect, #popover_uiimprover_mpDecisionModelSelect) { width: var(--mp-model-menu-width, auto) !important; max-width: calc(100vw - 16px); }
+:is(#popover_uiimprover_modelSelect, #popover_uiimprover_mpDecisionModelSelect) .sui_popover_model_button:has(.mp-model-dropdown-row) { padding: 0; border-radius: .25rem; }
 .mp-model-dropdown-favorite-marker { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 1.5rem; height: 1.5rem; font-size: 1.05rem; color: var(--text-soft); }
 .mp-model-dropdown-favorite-marker.mp-model-dropdown-star-active { color: #f5b301; }
-:is(.mp-model-dropdown-popover, #popover_uiimprover_modelSelect) .sui_popover_text_input {
+:is(.mp-model-dropdown-popover, :is(#popover_uiimprover_modelSelect, #popover_uiimprover_mpDecisionModelSelect)) .sui_popover_text_input {
     box-sizing: border-box; width: 100%; height: 1.6rem; min-height: 0;
     margin: .25rem 0; padding: 0 3px; border: 1px solid var(--shadow);
     border-radius: 0; background: var(--background); color: var(--text);
     font-size: .9rem; line-height: 1.3rem;
 }
-:is(.mp-model-dropdown-popover, #popover_uiimprover_modelSelect) .sui_popover_text_input:focus-visible { outline: 1px solid var(--emphasis); outline-offset: 2px; }
+:is(.mp-model-dropdown-popover, :is(#popover_uiimprover_modelSelect, #popover_uiimprover_mpDecisionModelSelect)) .sui_popover_text_input:focus-visible { outline: 1px solid var(--emphasis); outline-offset: 2px; }

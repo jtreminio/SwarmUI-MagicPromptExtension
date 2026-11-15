@@ -5,10 +5,11 @@ const MP_BACKENDS = ['openrouter', 'openaiapi'];
 const MP_BUILTINS = { prompt: 'Default prompt', randomprompt: 'Random prompt', instructiongen: 'Instruction generator' };
 let mpSettingsDraft = null;
 let mpEditingInstruction = 'prompt';
+let mpEditingDecision = null;
 let mpSettingsBusy = false;
 let mpSettingsOpening = false;
 let mpSettingsCloseQueued = false;
-let mpCatalogRequest = 0;
+const mpCatalogRequests = new Map();
 let mpSaveQueue = Promise.resolve();
 
 function mpRequest(route, payload = {}) {
@@ -30,9 +31,20 @@ function mpNormalizeSettings(settings) {
     result.instructions ||= {};
     result.instructions.custom ||= {};
     result.decisions ||= {
-        evaluator: 'startlux',
         questions: [{ id: 'refusal', title: 'Prompt refusal', question: 'Did this response refuse to generate the requested prompt?', type: 'noul', options: [], selected: true }]
     };
+    delete result.decisions.evaluator;
+    result.decisions.model = typeof result.decisions.model === 'string' ? result.decisions.model.trim() : '';
+    for (const key of ['blockedModels', 'favoritedModels']) {
+        const ids = new Map();
+        for (const id of Array.isArray(result.decisions[key]) ? result.decisions[key] : []) {
+            if (typeof id === 'string' && id.trim() && !ids.has(id.trim().toLowerCase())) ids.set(id.trim().toLowerCase(), id.trim());
+        }
+        result.decisions[key] = [...ids.values()];
+    }
+    const decisionBlocked = new Set(result.decisions.blockedModels.map(id => id.toLowerCase()));
+    result.decisions.favoritedModels = result.decisions.favoritedModels.filter(id => !decisionBlocked.has(id.toLowerCase()));
+    if (decisionBlocked.has(result.decisions.model.toLowerCase())) result.decisions.model = '';
     for (const key of ['blockedModels', 'favoritedModels']) {
         result[key] ||= {};
         for (const backend of MP_BACKENDS) {
@@ -68,29 +80,48 @@ function mpSettingsStatus(message, error = false) {
 }
 
 function mpCurrentSettings() { return mpSettingsDraft || MP.settings; }
-function mpModelSelectOptionText(row, showUnits = true) { return `${row.name || row.model}${row.costOut ? ` · ${row.costOut}${showUnits ? ' / 1M out' : ''}` : ''}`; }
-function mpCatalogKey(settings) { return `${settings.backend}\n${settings.backends[settings.backend]?.baseurl || ''}`; }
+function mpModelSelectOptionText(row, showUnits = true) {
+    if (row.decisionModel) {
+        const prices = [`${row.costIn || '—'} / 1M in`];
+        if (row.costOut && row.costOut !== '$0') prices.push(`${row.costOut} / 1M out`);
+        if (row.costRequest && row.costRequest !== '$0') prices.push(`${row.costRequest} / request`);
+        return `${row.name || row.model} · ${prices.join(' · ')}`;
+    }
+    return `${row.name || row.model}${row.costOut ? ` · ${row.costOut}${showUnits ? ' / 1M out' : ''}` : ''}`;
+}
+function mpCatalogKey(settings) { return settings.catalogKey || `${settings.backend}\n${settings.backends[settings.backend]?.baseurl || ''}`; }
 function mpCatalog(settings = mpCurrentSettings()) { return MP.modelCatalogs?.[mpCatalogKey(settings)] || []; }
+function mpModelIdKey(id, decisions) { return decisions ? id.toLowerCase() : id; }
+
+/** Adapt decision preferences to the shared model controls without touching prompt settings. */
+function mpDecisionModelSettings(settings = mpCurrentSettings()) {
+    return { backend: 'openrouter', backends: settings.backends, catalogKey: 'openrouter-decisions', model: settings.decisions.model,
+        blockedModels: { openrouter: settings.decisions.blockedModels }, favoritedModels: { openrouter: settings.decisions.favoritedModels } };
+}
 
 async function fetchModels(settings = mpCurrentSettings()) {
     const key = mpCatalogKey(settings);
-    const request = ++mpCatalogRequest;
+    const request = (mpCatalogRequests.get(key) || 0) + 1;
+    mpCatalogRequests.set(key, request);
+    const decisions = key === 'openrouter-decisions';
     mpSettingsStatus('Loading models…');
     try {
-        const response = await mpRequest('GetMagicPromptModels', {
+        const response = await mpRequest(decisions ? 'GetMagicPromptDecisionModels' : 'GetMagicPromptModels', decisions ? {} : {
             backend: settings.backend, baseurl: settings.backends[settings.backend]?.baseurl || ''
         });
+        if (mpCatalogRequests.get(key) !== request) return response;
         MP.modelCatalogs ||= {};
         MP.modelCatalogs[key] = (response.models || []).filter(row => row && row.model);
-        if (request === mpCatalogRequest && key === mpCatalogKey(mpCurrentSettings())) {
-            renderModelSettings();
-            mpSettingsStatus(`${response.models.length} models available.`);
+        if (decisions || key === mpCatalogKey(mpCurrentSettings())) {
+            if (decisions) { renderDecisionModelSettings(); mpRefreshDecisionModelControls(); }
+            else renderModelSettings();
+            mpSettingsStatus(`${response.models.length} ${decisions ? 'decision ' : ''}models available.`);
         }
         if (key === mpCatalogKey(MP.settings)) updateModelListOnLeft(true);
         return response;
     }
     catch (error) {
-        if (request === mpCatalogRequest) mpSettingsStatus(`Could not load models: ${error.message}`, true);
+        if (mpCatalogRequests.get(key) === request) mpSettingsStatus(`Could not load ${decisions ? 'decision ' : ''}models: ${error.message}`, true);
         throw error;
     }
 }
@@ -114,6 +145,7 @@ function updateModelListOnLeft(preserveSelection = true) {
         triggerChangeFor(instructions);
     }
     mpRefreshDecisionControls();
+    mpRefreshDecisionModelControls();
 }
 
 const mpDecisionSelections = new WeakMap();
@@ -127,7 +159,9 @@ function mpRememberDecisionSelection(select) {
 
 function mpAddUnavailableDecisionOption(select, value) {
     if (value && !Array.from(select.options).some(option => option.value === value)) {
-        select.add(new Option(`Saved question unavailable (${value}) — reselect`, value));
+        const option = new Option(`Saved ${select.id.includes('modelid') ? 'model' : 'question'} unavailable (${value}) — reselect`, value);
+        option.dataset.unavailable = '1';
+        select.add(option);
     }
 }
 
@@ -158,12 +192,50 @@ function mpRefreshDecisionControls() {
     }
 }
 
+/** Refresh Generate and preset model choices while preserving explicit workflow overrides. */
+function mpRefreshDecisionModelControls(rebuildCatalog = true) {
+    if (!MP.settings.decisions) return;
+    const settings = mpDecisionModelSettings(MP.settings);
+    const blocked = new Set(settings.blockedModels.openrouter.map(id => mpModelIdKey(id, true)));
+    const favorites = new Set(settings.favoritedModels.openrouter.map(id => mpModelIdKey(id, true)));
+    const label = settings.model ? `Settings default · ${settings.model}` : 'Settings default (not selected)';
+    const param = typeof gen_param_types !== 'undefined' && gen_param_types?.find(row => row.id === 'mpdecisionmodelid');
+    for (const prefix of ['input_', 'preset_input_']) {
+        const select = document.getElementById(`${prefix}mpdecisionmodelid`);
+        if (!select) continue;
+        const previous = select.dataset.wantsValue || select.value;
+        // Retain the server catalog until the browser's independent decision catalog arrives.
+        if (rebuildCatalog && MP.modelCatalogs?.[mpCatalogKey(settings)]) mpFillModelSelect(select, settings, previous, true);
+        if (!Array.from(select.options).some(option => option.value === '')) select.add(new Option(label, ''), 0);
+        const fallback = Array.from(select.options).find(option => option.value === '');
+        fallback.text = label;
+        for (const option of select.options) {
+            delete option.dataset.blocked;
+            delete option.dataset.favorited;
+            if (blocked.has(mpModelIdKey(option.value, true))) option.dataset.blocked = '1';
+            if (favorites.has(mpModelIdKey(option.value, true))) option.dataset.favorited = '1';
+        }
+        mpAddUnavailableDecisionOption(select, previous);
+        select.value = previous;
+        select.setAttribute('aria-label', 'MP Decision Model ID');
+        delete select.dataset.wantsValue;
+        mpRememberDecisionSelection(select);
+        if (param) {
+            // Unavailable explicit overrides belong only to their own picker.
+            const options = Array.from(select.options).filter(option => !option.dataset.blocked && !option.dataset.unavailable);
+            param.values = options.map(option => option.value);
+            param.value_names = options.map(option => option.text);
+        }
+        triggerChangeFor(select);
+    }
+}
+
 function mpInstallDecisionControlHandling() {
     // Swarm otherwise defers a preset question ID that has no option.
     if (typeof setDirectParamValue === 'function') {
         const setParam = setDirectParamValue;
         setDirectParamValue = function (param, value, element, ...rest) {
-            const select = param.id === 'mpdecisionquestion' && (element || document.getElementById('input_mpdecisionquestion'));
+            const select = ['mpdecisionquestion', 'mpdecisionmodelid'].includes(param.id) && (element || document.getElementById(`input_${param.id}`));
             if (select?.tagName !== 'SELECT') return setParam.call(this, param, value, element, ...rest);
             mpAddUnavailableDecisionOption(select, value);
             delete select.dataset.wantsValue;
@@ -176,7 +248,7 @@ function mpInstallDecisionControlHandling() {
     if (typeof refreshParameterValues === 'function') {
         const refresh = refreshParameterValues;
         refreshParameterValues = function (strong, type, callback) {
-            const selects = document.querySelectorAll('#input_mpdecisionquestion, #preset_input_mpdecisionquestion');
+            const selects = document.querySelectorAll('#input_mpdecisionquestion, #preset_input_mpdecisionquestion, #input_mpdecisionmodelid, #preset_input_mpdecisionmodelid');
             selects.forEach(mpRememberDecisionSelection);
             return refresh.call(this, strong, type, () => {
                 for (const select of selects) {
@@ -187,6 +259,8 @@ function mpInstallDecisionControlHandling() {
                     select.value = value;
                     triggerChangeFor(select);
                 }
+                mpRefreshDecisionModelControls(false);
+                fetchModels(mpDecisionModelSettings()).catch(() => {});
                 callback?.();
             });
         };
@@ -201,46 +275,58 @@ function mpCompareModelDates(a, b, backend) {
 
 function mpFillModelSelect(select, settings, selected, preserveBlockedSelection = false) {
     const backend = settings.backend;
-    const blocked = new Set(settings.blockedModels[backend]);
-    const favorites = new Set(settings.favoritedModels[backend]);
-    if (blocked.has(selected) && !preserveBlockedSelection) selected = '';
+    const key = id => mpModelIdKey(id, settings.catalogKey === 'openrouter-decisions');
+    const blocked = new Set(settings.blockedModels[backend].map(key));
+    const favorites = new Set(settings.favoritedModels[backend].map(key));
+    if (blocked.has(key(selected)) && !preserveBlockedSelection) selected = '';
     // OpenRouter's creation timestamp is the date the model was added to its catalog.
     // Keep favorites pinned, newest first within each group. Stable sorting retains
     // provider order for equal/missing dates and for local catalogs.
     const rows = mpCatalog(settings).slice().sort((a, b) =>
-        Number(favorites.has(b.model)) - Number(favorites.has(a.model)) ||
+        Number(favorites.has(key(b.model))) - Number(favorites.has(key(a.model))) ||
         mpCompareModelDates(a, b, backend));
     select.replaceChildren(new Option('Select a model', ''));
     for (const row of rows) {
-        if (blocked.has(row.model) && row.model !== selected) continue;
+        if (blocked.has(key(row.model)) && row.model !== selected) continue;
         const option = new Option(mpModelSelectOptionText(row, select.id !== 'input_mpmodelid'), row.model);
-        if (blocked.has(row.model)) option.dataset.blocked = '1';
-        if (favorites.has(row.model)) option.dataset.favorited = '1';
-        if (select.id === 'modelSelect') {
+        if (blocked.has(key(row.model))) option.dataset.blocked = '1';
+        if (favorites.has(key(row.model))) option.dataset.favorited = '1';
+        if (select.id === 'modelSelect' || select.id === 'mpDecisionModelSelect') {
             const label = escapeHtmlNoBr(option.text);
-            const favorite = favorites.has(row.model);
+            const favorite = favorites.has(key(row.model));
             option.dataset.cleanname = `<span class="mp-model-dropdown-row${favorite ? ' mp-model-dropdown-row-favorited' : ''}"><span class="mp-model-dropdown-row-label">${label}</span><span class="mp-model-dropdown-favorite-marker${favorite ? ' mp-model-dropdown-star-active' : ''}" title="${favorite ? 'Favorited model' : 'Not favorited'}" aria-label="${favorite ? 'Favorited model' : 'Not favorited'}">${favorite ? '★' : '☆'}</span></span>`;
         }
         select.add(option);
     }
     // A saved ID may be temporarily absent from a provider's catalog.
     if (selected && selected !== 'loading' && ![...select.options].some(option => option.value === selected)) {
-        select.add(new Option(`${selected} (unavailable)`, selected));
+        const option = new Option(`${selected} (unavailable)`, selected);
+        option.dataset.unavailable = '1';
+        select.add(option);
     }
     select.value = selected === 'loading' ? '' : selected || '';
 }
 
-function isModelFavoritedForBackend(backend, id) { return MP.settings.favoritedModels?.[backend]?.includes(id) || false; }
+function isModelFavoritedForBackend(backend, id) {
+    const decisions = backend === 'decisions';
+    return (decisions ? MP.settings.decisions.favoritedModels : MP.settings.favoritedModels?.[backend])
+        ?.some(value => mpModelIdKey(value, decisions) === mpModelIdKey(id, decisions)) || false;
+}
 function mpChangeModelPreference(key, backend, id, add) {
-    const list = MP.settings[key][backend];
-    MP.settings[key][backend] = list.filter(value => value !== id);
+    const decisions = backend === 'decisions';
+    const scope = decisions ? MP.settings.decisions : MP.settings;
+    const read = name => decisions ? scope[name] : scope[name][backend];
+    const write = (name, values) => { if (decisions) scope[name] = values; else scope[name][backend] = values; };
+    const matches = value => mpModelIdKey(value, decisions) === mpModelIdKey(id, decisions);
+    write(key, read(key).filter(value => !matches(value)));
     if (add) {
-        MP.settings[key][backend].push(id);
+        read(key).push(id);
         const other = key === 'blockedModels' ? 'favoritedModels' : 'blockedModels';
-        MP.settings[other][backend] = MP.settings[other][backend].filter(value => value !== id);
+        write(other, read(other).filter(value => !matches(value)));
     }
+    if (decisions && scope.blockedModels.some(value => mpModelIdKey(value, true) === mpModelIdKey(scope.model, true))) scope.model = '';
     updateModelListOnLeft(true);
-    mpPersistSettings({ blockedModels: MP.settings.blockedModels, favoritedModels: MP.settings.favoritedModels })
+    mpPersistSettings(decisions ? { decisions: { blockedModels: scope.blockedModels, favoritedModels: scope.favoritedModels } } : { blockedModels: MP.settings.blockedModels, favoritedModels: MP.settings.favoritedModels })
         .catch(error => showError(`Could not save model preferences: ${error.message}`));
 }
 Object.assign(MP, {
@@ -416,6 +502,7 @@ function initSettingsModal() {
           <button type="button" role="tab" id="mpTabProvider" aria-controls="mpPanelProvider" aria-selected="true" data-mp-tab="Provider">Provider</button>
           <button type="button" role="tab" id="mpTabModels" aria-controls="mpPanelModels" aria-selected="false" tabindex="-1" data-mp-tab="Models">Models</button>
           <button type="button" role="tab" id="mpTabInstructions" aria-controls="mpPanelInstructions" aria-selected="false" tabindex="-1" data-mp-tab="Instructions">Instructions</button>
+          <button type="button" role="tab" id="mpTabDecisionModels" aria-controls="mpPanelDecisionModels" aria-selected="false" tabindex="-1" data-mp-tab="DecisionModels">Decision Models</button>
           <button type="button" role="tab" id="mpTabDecisions" aria-controls="mpPanelDecisions" aria-selected="false" tabindex="-1" data-mp-tab="Decisions">Decisions</button>
         </div>
         <div class="modal-body">
@@ -445,30 +532,40 @@ function initSettingsModal() {
                 <details class="mp-ai-generator"><summary>Draft with AI</summary><label class="mp-field" for="mpInstructionBrief">Describe the instruction<textarea class="form-control" id="mpInstructionBrief" rows="3"></textarea></label><button type="button" class="basic-button" id="mpGenerateInstruction">Generate draft</button><p class="mp-muted">Uses your saved provider and default model. Review the generated text before saving.</p></details>
               </div></div>
           </section>
+          <section id="mpPanelDecisionModels" role="tabpanel" aria-labelledby="mpTabDecisionModels" hidden>
+            <div class="mp-section-heading"><div><h6>Decision model preferences</h6><p class="mp-muted">OpenRouter models for decision checks. Favorites and blocks apply only to decisions.</p></div><button type="button" class="basic-button" id="mpRefreshDecisionModels">Refresh</button></div>
+            <div class="mp-field"><label for="mpDecisionModelSelect">Default decision model</label><select class="form-select" id="mpDecisionModelSelect"></select></div>
+            <div class="mp-field"><label id="mpDecisionFavoriteModelsLabel">Favorited decision models</label><select id="mpDecisionFavoriteModels" multiple hidden></select></div>
+            <div class="mp-field"><label id="mpDecisionBlockedModelsLabel">Blocked decision models</label><select id="mpDecisionBlockedModels" multiple hidden></select></div>
+            <p class="mp-muted">Uses your OpenRouter API key from User settings. Select a default before enabling decision checks. Prices are USD; input tokens and request fees may be charged even when output tokens are free.</p>
+          </section>
           <section id="mpPanelDecisions" role="tabpanel" aria-labelledby="mpTabDecisions" hidden>
-            <div class="mp-section-heading"><div><h6>Decision questions</h6><p class="mp-muted">Give questions titles so you can pick them on Generate.</p></div><button type="button" class="basic-button" id="mpNewDecision">Add question</button></div>
-            <label class="mp-field">Local decision model<select id="mpDecisionEvaluator" class="form-select"><option value="startlux">StartLux Decision 0.8B (Q8_0)</option><option value="jev">Jev Style Decision 2B (Q8_0)</option></select></label>
-            <div id="mpDecisionQuestions"></div>
-            <template id="mpDecisionQuestionTemplate"><fieldset class="mp-decision-question">
-              <legend>Decision question</legend>
+            <div class="mp-section-heading"><div><h6>Decision library</h6><p class="mp-muted">Select a decision to edit its question, answer options, and skip rule.</p></div><div class="mp-toolbar">
+              <button type="button" class="basic-button" id="mpImportDecisions">Import</button><button type="button" class="basic-button" id="mpExportDecisions">Export all</button><button type="button" class="basic-button mp-primary" id="mpNewDecision">New decision</button>
+              <input type="file" id="mpImportDecisionsFile" accept="application/json,.json" hidden></div></div>
+            <div class="mp-library"><div class="mp-library-sidebar"><label class="visually-hidden" for="mpDecisionSearch">Search decisions</label><input class="form-control" type="search" id="mpDecisionSearch" placeholder="Search decisions"><div id="mpDecisionList" class="mp-instruction-list"></div></div>
+              <div id="mpDecisionQuestions" class="mp-editor"></div></div>
+            <template id="mpDecisionQuestionTemplate"><div class="mp-decision-question">
               <label class="mp-field">Title<input class="form-control mp-decision-title" maxlength="100" placeholder="Prompt refusal"></label>
               <label><input class="mp-decision-selected" type="checkbox"> Include in Settings defaults</label>
-              <label class="mp-field">Question<textarea class="form-control mp-decision-text" rows="2" maxlength="2000"></textarea></label>
+              <label class="mp-field mp-content-field">Question<textarea class="form-control mp-decision-text" rows="8" maxlength="2000"></textarea></label>
               <label class="mp-field">Answer type<select class="form-select mp-decision-type"><option value="noul">Yes or no</option><option value="choice">Multiple choice</option><option value="score">Rating</option></select></label>
               <label class="mp-field mp-decision-options-field">Answer options<textarea class="form-control mp-decision-options" rows="3"></textarea><span class="mp-muted"></span></label>
               <div class="mp-field"><label class="mp-decision-skip-label">Skip If</label><input class="form-control mp-decision-skip-if" maxlength="500"><span class="mp-muted mp-decision-skip-help"></span></div>
-              <button type="button" class="basic-button mp-danger mp-remove-decision">Remove question</button>
-            </fieldset></template>
+              <div class="mp-toolbar"><button type="button" class="basic-button mp-export-decision">Export</button><button type="button" class="basic-button mp-danger mp-remove-decision">Delete decision</button></div>
+            </div></template>
           </section>
         </div>
         <div class="modal-footer"><span id="mpSettingsStatus" role="status" aria-live="polite"></span><button type="button" class="basic-button" data-bs-dismiss="modal">Cancel</button><button type="button" class="basic-button mp-primary" id="mpSaveSettings">Save and close</button></div>
       </div></div>
     </div>`);
     const modal = document.getElementById('settingsModal');
-    new ResizeObserver(([entry]) => {
-        const width = entry.target.getBoundingClientRect().width;
-        if (width) modal.style.setProperty('--mp-model-menu-width', `${width}px`);
-    }).observe(document.getElementById('modelSelect'));
+    for (const id of ['modelSelect', 'mpDecisionModelSelect']) {
+        new ResizeObserver(entries => {
+            const width = entries[0]?.target.getBoundingClientRect().width;
+            if (width) modal.style.setProperty('--mp-model-menu-width', `${width}px`);
+        }).observe(document.getElementById(id));
+    }
     modal.addEventListener('hide.bs.modal', event => { if (mpSettingsBusy) event.preventDefault(); });
     modal.addEventListener('hidden.bs.modal', () => { mpSettingsDraft = null; });
     modal.addEventListener('hide.bs.modal', () => { mpCloseModelPickers(); mpCloseSwarmSettingsDropdown(); });
@@ -504,13 +601,24 @@ function initSettingsModal() {
             tabs[index].click(); tabs[index].focus();
         });
     });
+    document.getElementById('mpDecisionSearch').addEventListener('input', () => { mpCaptureDecisionEditor(); mpRenderDecisionList(); });
     document.getElementById('mpNewDecision').addEventListener('click', () => {
-        const list = document.getElementById('mpDecisionQuestions');
-        if (list.childElementCount < 32) {
-            const id = `decision-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-            mpAddDecisionQuestion({ id, title: '', question: '', type: 'noul', options: [], selected: true }).focus();
-        }
+        mpCaptureDecisionEditor();
+        if (mpSettingsDraft.decisions.questions.length >= 32) { mpSettingsStatus('You can save up to 32 decisions.', true); return; }
+        const id = `decision-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        mpSettingsDraft.decisions.questions.push({ id, title: mpUniqueDecisionTitle('New decision'), question: '', type: 'noul', options: [], selected: true, skipIf: '' });
+        mpEditingDecision = id;
+        document.getElementById('mpDecisionSearch').value = '';
+        mpRenderDecisionList(); mpRenderDecisionEditor();
+        document.querySelector('.mp-decision-title').select();
     });
+    document.getElementById('mpImportDecisions').addEventListener('click', () => document.getElementById('mpImportDecisionsFile').click());
+    document.getElementById('mpImportDecisionsFile').addEventListener('change', async event => {
+        try { await mpImportDecisions(event.target.files[0]); }
+        catch (error) { mpSettingsStatus(`Import failed: ${error.message}`, true); }
+        event.target.value = '';
+    });
+    document.getElementById('mpExportDecisions').addEventListener('click', () => mpExportDecisions(false));
     document.getElementById('mpBackend').addEventListener('change', event => {
         mpCaptureProvider(false);
         mpSettingsDraft.backend = event.target.value;
@@ -520,6 +628,7 @@ function initSettingsModal() {
     });
     document.getElementById('mpBaseUrl').addEventListener('change', () => { mpCaptureProvider(); renderModelSettings(); });
     document.getElementById('mpRefreshModels').addEventListener('click', () => { mpCaptureProvider(); fetchModels().catch(() => {}); });
+    document.getElementById('mpRefreshDecisionModels').addEventListener('click', () => fetchModels(mpDecisionModelSettings()).catch(() => {}));
     document.getElementById('mpSaveSettings').addEventListener('click', saveSettings);
     document.getElementById('mpApiKeys').addEventListener('click', () => {
         modal.addEventListener('hidden.bs.modal', () => {
@@ -555,21 +664,35 @@ function initSettingsModal() {
     document.getElementById('mpGenerateInstruction').addEventListener('click', generateInstructionWithAI);
     document.getElementById('mpInstructionTitle').addEventListener('input', () => { mpCaptureInstruction(); renderInstructionList(); });
     // Preferences use the same checkbox-and-pill pattern as WhatTheDuck.
-    for (const [id, key] of [['mpFavoriteModels', 'favoritedModels'], ['mpBlockedModels', 'blockedModels']]) {
+    for (const [id, key, decisions] of [
+        ['mpFavoriteModels', 'favoritedModels', false], ['mpBlockedModels', 'blockedModels', false],
+        ['mpDecisionFavoriteModels', 'favoritedModels', true], ['mpDecisionBlockedModels', 'blockedModels', true]
+    ]) {
         const select = document.getElementById(id);
         mpModelPickers.push(new MPModelPreferencePicker(select, modal));
         select.addEventListener('change', () => {
             if (!mpSettingsDraft) return;
-            const backend = mpSettingsDraft.backend;
             const values = [...select.selectedOptions].map(option => option.value);
-            mpSettingsDraft[key][backend] = values;
             const other = key === 'blockedModels' ? 'favoritedModels' : 'blockedModels';
-            mpSettingsDraft[other][backend] = mpSettingsDraft[other][backend].filter(id => !values.includes(id));
-            renderModelSettings();
+            if (decisions) {
+                mpSettingsDraft.decisions[key] = values;
+                const selected = new Set(values.map(id => mpModelIdKey(id, true)));
+                mpSettingsDraft.decisions[other] = mpSettingsDraft.decisions[other].filter(id => !selected.has(mpModelIdKey(id, true)));
+                renderDecisionModelSettings();
+            }
+            else {
+                const backend = mpSettingsDraft.backend;
+                mpSettingsDraft[key][backend] = values;
+                mpSettingsDraft[other][backend] = mpSettingsDraft[other][backend].filter(id => !values.includes(id));
+                renderModelSettings();
+            }
         });
     }
     document.getElementById('modelSelect').addEventListener('change', () => {
         if (mpSettingsDraft) mpSettingsDraft.model = document.getElementById('modelSelect').value;
+    });
+    document.getElementById('mpDecisionModelSelect').addEventListener('change', event => {
+        if (mpSettingsDraft) mpSettingsDraft.decisions.model = event.target.value;
     });
 }
 
@@ -581,6 +704,7 @@ function mpSelectSettingsTab(name) {
         button.setAttribute('aria-selected', String(selected)); button.tabIndex = selected ? 0 : -1;
         document.getElementById(`mpPanel${button.dataset.mpTab}`).hidden = !selected;
     });
+    if (name === 'DecisionModels' && !mpCatalog(mpDecisionModelSettings()).length) fetchModels(mpDecisionModelSettings()).catch(() => {});
 }
 function mpRenderProvider() {
     const settings = mpSettingsDraft;
@@ -604,17 +728,30 @@ function mpCaptureProvider(validate = false) {
 function renderModelSettings() {
     if (!document.getElementById('modelSelect')) return;
     const settings = mpCurrentSettings();
-    mpFillModelSelect(document.getElementById('modelSelect'), settings, settings.model);
+    mpRenderModelPreferences(settings, 'modelSelect', 'mpFavoriteModels', 'mpBlockedModels');
     if (mpSettingsDraft) mpSettingsDraft.model = document.getElementById('modelSelect').value;
-    for (const [id, key] of [['mpFavoriteModels', 'favoritedModels'], ['mpBlockedModels', 'blockedModels']]) {
+}
+
+function renderDecisionModelSettings() {
+    if (!document.getElementById('mpDecisionModelSelect')) return;
+    mpRenderModelPreferences(mpDecisionModelSettings(), 'mpDecisionModelSelect', 'mpDecisionFavoriteModels', 'mpDecisionBlockedModels');
+    if (mpSettingsDraft) mpSettingsDraft.decisions.model = document.getElementById('mpDecisionModelSelect').value;
+}
+
+function mpRenderModelPreferences(settings, modelId, favoritesId, blockedId) {
+    mpFillModelSelect(document.getElementById(modelId), settings, settings.model);
+    const modelKey = id => mpModelIdKey(id, settings.catalogKey === 'openrouter-decisions');
+    const blocked = new Set(settings.blockedModels[settings.backend].map(modelKey));
+    for (const [id, key] of [[favoritesId, 'favoritedModels'], [blockedId, 'blockedModels']]) {
         const select = document.getElementById(id);
         const chosen = settings[key][settings.backend];
-        const rows = new Map(mpCatalog(settings).map(row => [row.model, row]));
-        for (const model of chosen) if (!rows.has(model)) rows.set(model, { model });
+        const selected = new Set(chosen.map(modelKey));
+        const rows = new Map(mpCatalog(settings).map(row => [modelKey(row.model), row]));
+        for (const model of chosen) if (!rows.has(modelKey(model))) rows.set(modelKey(model), { model });
         select.replaceChildren();
         for (const row of [...rows.values()].sort((a, b) => mpCompareModelDates(a, b, settings.backend))) {
-            if (key === 'favoritedModels' && settings.blockedModels[settings.backend].includes(row.model)) continue;
-            const option = new Option(`${mpModelSelectOptionText(row)}${row.name && row.name !== row.model ? ` — ${row.model}` : ''}`, row.model, false, chosen.includes(row.model));
+            if (key === 'favoritedModels' && blocked.has(modelKey(row.model))) continue;
+            const option = new Option(`${mpModelSelectOptionText(row)}${row.name && row.name !== row.model ? ` — ${row.model}` : ''}`, row.model, false, selected.has(modelKey(row.model)));
             option.dataset.label = mpModelSelectOptionText(row);
             select.add(option);
         }
@@ -660,6 +797,52 @@ function mpRenderInstruction() {
     document.getElementById('mpInstructionContent').value = instruction.content || '';
     document.getElementById('mpDeleteInstruction').hidden = builtin;
 }
+function mpUniqueDecisionTitle(title) {
+    const titles = new Set(mpSettingsDraft.decisions.questions.map(row => row.title.toLowerCase()));
+    let result = title;
+    for (let index = 2; titles.has(result.toLowerCase()); index++) result = `${title.slice(0, 90)} (${index})`;
+    return result;
+}
+function mpCaptureDecisionEditor() {
+    const row = document.querySelector('#mpDecisionQuestions .mp-decision-question');
+    if (!row || !mpSettingsDraft) return;
+    const decision = mpSettingsDraft.decisions.questions.find(item => item.id === row.dataset.decisionId);
+    if (!decision) return;
+    Object.assign(decision, {
+        title: row.querySelector('.mp-decision-title').value.trim(),
+        question: row.querySelector('.mp-decision-text').value.trim(),
+        type: row.querySelector('.mp-decision-type').value,
+        options: row.querySelector('.mp-decision-options').value.split('\n').map(option => option.trim()).filter(Boolean),
+        skipIf: row.querySelector('.mp-decision-skip-if:enabled')?.value.trim() || '',
+        selected: row.querySelector('.mp-decision-selected').checked
+    });
+}
+function mpRenderDecisionList() {
+    const list = document.getElementById('mpDecisionList');
+    const query = document.getElementById('mpDecisionSearch').value.trim().toLowerCase();
+    list.replaceChildren();
+    for (const decision of mpSettingsDraft.decisions.questions) {
+        if (!`${decision.title} ${decision.question}`.toLowerCase().includes(query)) continue;
+        const button = document.createElement('button');
+        button.type = 'button'; button.className = 'mp-instruction-choice';
+        button.textContent = decision.title || 'Untitled decision';
+        button.setAttribute('aria-pressed', String(decision.id === mpEditingDecision));
+        button.addEventListener('click', () => {
+            mpCaptureDecisionEditor(); mpEditingDecision = decision.id;
+            mpRenderDecisionList(); mpRenderDecisionEditor();
+        });
+        list.append(button);
+    }
+    if (!list.children.length) list.textContent = 'No matching decisions.';
+}
+function mpRenderDecisionEditor() {
+    const editor = document.getElementById('mpDecisionQuestions');
+    editor.replaceChildren();
+    const decision = mpSettingsDraft.decisions.questions.find(row => row.id === mpEditingDecision);
+    if (decision) mpAddDecisionQuestion(decision);
+    else editor.textContent = 'Create a decision to start your library.';
+}
+
 function mpAddDecisionQuestion(decision) {
     const row = document.getElementById('mpDecisionQuestionTemplate').content.firstElementChild.cloneNode(true);
     row.dataset.decisionId = decision.id;
@@ -692,38 +875,77 @@ function mpAddDecisionQuestion(decision) {
     };
     type.addEventListener('change', updateHint);
     updateHint();
+    title.addEventListener('input', () => { mpCaptureDecisionEditor(); mpRenderDecisionList(); });
+    row.querySelector('.mp-export-decision').addEventListener('click', () => mpExportDecisions(true));
     row.querySelector('.mp-remove-decision').addEventListener('click', () => {
-        row.remove();
+        if (!confirm(`Delete “${title.value}”? This takes effect when you save settings.`)) return;
+        const questions = mpSettingsDraft.decisions.questions;
+        const index = questions.findIndex(item => item.id === decision.id);
+        questions.splice(index, 1);
+        mpEditingDecision = questions[Math.min(index, questions.length - 1)]?.id || null;
+        mpRenderDecisionList(); mpRenderDecisionEditor();
         document.getElementById('mpNewDecision').focus();
     });
     document.getElementById('mpDecisionQuestions').append(row);
     return title;
 }
 
+function mpRevealDecision(id) {
+    mpEditingDecision = id;
+    document.getElementById('mpDecisionSearch').value = '';
+    mpRenderDecisionList(); mpRenderDecisionEditor(); mpSelectSettingsTab('Decisions');
+}
+
 function mpCaptureDecisions() {
-    const questions = Array.from(document.getElementById('mpDecisionQuestions').children, row => ({
-        id: row.dataset.decisionId,
-        title: row.querySelector('.mp-decision-title').value.trim(),
-        question: row.querySelector('.mp-decision-text').value.trim(),
-        type: row.querySelector('.mp-decision-type').value,
-        options: row.querySelector('.mp-decision-options').value.split('\n').map(option => option.trim()).filter(Boolean),
-        skipIf: row.querySelector('.mp-decision-skip-if:enabled')?.value.trim() || '',
-        selected: row.querySelector('.mp-decision-selected').checked
-    }));
+    mpCaptureDecisionEditor();
+    const questions = mpSettingsDraft.decisions.questions;
     const titles = questions.map(row => row.title.toLowerCase());
-    if (titles.some(title => !title) || new Set(titles).size !== titles.length) {
-        mpSelectSettingsTab('Decisions');
+    const badTitle = questions.find((row, index) => !row.title || titles.indexOf(titles[index]) !== index);
+    if (badTitle) {
+        mpRevealDecision(badTitle.id);
         throw new Error('Give every question a unique title.');
     }
-    for (const { question, type, options } of questions) {
+    for (const decision of questions) {
+        const { question, type, options } = decision;
         const validCount = type === 'noul' ? [0, 2].includes(options.length)
             : options.length >= 2 && options.length <= (type === 'score' ? 10 : 26);
         if (!question || !validCount || new Set(options).size !== options.length || options.some(option => option.length > 500)) {
-            mpSelectSettingsTab('Decisions');
+            mpRevealDecision(decision.id);
             throw new Error('Enter a question and follow its answer option instructions. Each option must be distinct and at most 500 characters.');
         }
     }
-    mpSettingsDraft.decisions = { evaluator: document.getElementById('mpDecisionEvaluator').value, questions };
+    mpSettingsDraft.decisions.questions = questions;
+}
+
+async function mpImportDecisions(file) {
+    if (!file || !mpSettingsDraft || mpSettingsBusy) return;
+    const draft = mpSettingsDraft;
+    const data = JSON.parse(await file.text());
+    if (draft !== mpSettingsDraft || mpSettingsBusy) return;
+    if (!data || typeof data !== 'object') throw new Error('Expected decision JSON.');
+    const rows = typeof data.question === 'string' ? [data] : Object.values(data);
+    if (!rows.length || rows.some(row => !row || typeof row.title !== 'string' || !row.title.trim() || row.title.length > 100
+        || typeof row.question !== 'string' || !row.question.trim() || row.question.length > 2000
+        || !['noul', 'choice', 'score'].includes(row.type) || !Array.isArray(row.options) || row.options.some(option => typeof option !== 'string')))
+        throw new Error('Each decision needs a title, question, answer type, and option list.');
+    mpCaptureDecisionEditor();
+    if (mpSettingsDraft.decisions.questions.length + rows.length > 32) throw new Error('You can save up to 32 decisions.');
+    for (const row of rows) {
+        const id = `decision-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        mpSettingsDraft.decisions.questions.push({ id, title: mpUniqueDecisionTitle(row.title.trim()), question: row.question.trim(),
+            type: row.type, options: row.options.map(option => option.trim()), selected: row.selected === true, skipIf: typeof row.skipIf === 'string' ? row.skipIf : '' });
+        mpEditingDecision = id;
+    }
+    document.getElementById('mpDecisionSearch').value = '';
+    mpRenderDecisionList(); mpRenderDecisionEditor();
+    mpSettingsStatus(`Imported ${rows.length} decisions. Save to keep them.`);
+}
+function mpExportDecisions(single) {
+    mpCaptureDecisionEditor();
+    const rows = mpSettingsDraft.decisions.questions.filter(row => !single || row.id === mpEditingDecision);
+    const url = URL.createObjectURL(new Blob([JSON.stringify(Object.fromEntries(rows.map(row => [row.id, row])), null, 2)], { type: 'application/json' }));
+    const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'magicprompt-decisions.json';
+    anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 async function showSettingsModal() {
@@ -738,10 +960,10 @@ async function showSettingsModal() {
     mpSettingsDraft = mpNormalizeSettings(MP.settings);
     mpEditingInstruction = 'prompt';
     document.getElementById('mpInstructionSearch').value = '';
-    mpRenderProvider(); renderModelSettings(); renderInstructionList(); mpRenderInstruction();
-    document.getElementById('mpDecisionEvaluator').value = mpSettingsDraft.decisions.evaluator;
-    document.getElementById('mpDecisionQuestions').replaceChildren();
-    mpSettingsDraft.decisions.questions.forEach(mpAddDecisionQuestion);
+    mpRenderProvider(); renderModelSettings(); renderDecisionModelSettings(); renderInstructionList(); mpRenderInstruction();
+    mpEditingDecision = mpSettingsDraft.decisions.questions[0]?.id || null;
+    document.getElementById('mpDecisionSearch').value = '';
+    mpRenderDecisionList(); mpRenderDecisionEditor();
     mpSelectSettingsTab('Provider'); mpSettingsStatus('Changes apply when you save.');
     mpSettingsOpening = true; mpSettingsCloseQueued = false;
     (bootstrap.Modal.getInstance(modal) || new bootstrap.Modal(modal)).show();

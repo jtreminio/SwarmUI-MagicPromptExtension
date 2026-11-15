@@ -29,6 +29,7 @@ public class PromptHandler
     private readonly T2IRegisteredParam<bool> _paramDisableLlmRequest;
     private readonly T2IRegisteredParam<bool> _paramDecisionChecks;
     private readonly T2IRegisteredParam<string> _paramDecisionQuestion;
+    private readonly T2IRegisteredParam<string> _paramDecisionModelId;
     private sealed record PromptRequest(JObject SettingsResponse, int TimeoutMs, string BackendIdentity,
         bool CheckDecisions, DecisionEvaluator.Selection Decisions);
 
@@ -110,7 +111,8 @@ public class PromptHandler
         T2IRegisteredParam<string> paramOnError,
         T2IRegisteredParam<bool> paramDisableLlmRequest,
         T2IRegisteredParam<bool> paramDecisionChecks = null,
-        T2IRegisteredParam<string> paramDecisionQuestion = null)
+        T2IRegisteredParam<string> paramDecisionQuestion = null,
+        T2IRegisteredParam<string> paramDecisionModelId = null)
     {
         _cache = cache;
         _paramUseCache = paramUseCache;
@@ -122,6 +124,7 @@ public class PromptHandler
         _paramDisableLlmRequest = paramDisableLlmRequest;
         _paramDecisionChecks = paramDecisionChecks;
         _paramDecisionQuestion = paramDecisionQuestion;
+        _paramDecisionModelId = paramDecisionModelId;
     }
 
     /// <summary>
@@ -222,7 +225,9 @@ public class PromptHandler
         int timeoutMs = LLMAPICalls.GetChatBackendTimeoutMs(settings, out string backendIdentity, out string endpoint);
         bool checkDecisions = _paramDecisionChecks != null && userInput.Get(_paramDecisionChecks, defVal: false);
         string selectedId = checkDecisions && _paramDecisionQuestion != null ? userInput.Get(_paramDecisionQuestion, defVal: "") : "";
-        DecisionEvaluator.Selection selection = checkDecisions ? DecisionEvaluator.ResolveSelection(settings?["decisions"], selectedId, endpoint) : null;
+        string selectedModel = checkDecisions && _paramDecisionModelId != null ? userInput.Get(_paramDecisionModelId, defVal: "") : "";
+        DecisionEvaluator.Selection selection = checkDecisions
+            ? DecisionEvaluator.ResolveSelection(settings?["decisions"], selectedId, endpoint, selectedModel) : null;
         return new PromptRequest(response, timeoutMs, backendIdentity, checkDecisions, selection);
     }
 
@@ -242,7 +247,7 @@ public class PromptHandler
                 () => MakeLlmRequest(content, userInput, instructions, modelId, thinking, includeDecisionSource, request.SettingsResponse, out fetched),
                 request.TimeoutMs, userInput.InterruptToken, out error, requireFresh: request.Decisions?.RequiresFreshResponse == true);
             if (request.CheckDecisions && !string.IsNullOrEmpty(response))
-                decisionMatch = DecisionEvaluator.Observe(fetched, userInput, tagIndex, request.Decisions);
+                decisionMatch = DecisionEvaluator.Observe(fetched, userInput, tagIndex, request.Decisions, request.SettingsResponse["settings"] as JObject);
         }
         catch (OperationCanceledException) when (userInput.InterruptToken.IsCancellationRequested)
         {

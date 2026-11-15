@@ -13,4 +13,8 @@
     <Compile Include="../WebAPI/**/*.cs" />
     <Compile Include="../../../GlobalUsings.cs" />
   </ItemGroup>
+  <ItemGroup Condition="'$(UseSwarmEngineSource)' == 'true'">
+    <!-- Verify intentional batch skips against the current core source even before SwarmUI is rebuilt. -->
+    <Compile Include="../../../Text2Image/T2IEngine.cs" />
+  </ItemGroup>
 </Project>

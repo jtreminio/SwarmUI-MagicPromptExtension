@@ -11,8 +11,7 @@
 .mp-settings .mp-settings-tabs { display: flex; flex-wrap: wrap; gap: 0 clamp(.6rem, 3vw, 1.5rem); padding: 0 1.4rem; border-bottom: 1px solid var(--border-color); }
 .mp-settings .mp-settings-tabs button { padding: .85rem .1rem; background: transparent; border: 0; border-bottom: 3px solid transparent; color: var(--text); }
 .mp-settings .mp-settings-tabs button[aria-selected="true"] { color: var(--emphasis); border-bottom-color: var(--emphasis); }
-.mp-settings .mp-decision-question { border: 1px solid var(--border-color); padding: .75rem 1rem 1rem; margin-block: 1rem; border-radius: .4rem; }
-.mp-settings .mp-decision-question legend { float: none; width: auto; padding-inline: .25rem; font-size: .9rem; }
+.mp-settings .mp-decision-question { min-width: 0; }
 .mp-settings .mp-decision-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr)); gap: .75rem; }
 .mp-settings .mp-decision-table { overflow-x: auto; margin: .7rem 0 1.5rem; }
 .mp-settings .mp-decision-table table { width: 100%; font-size: .9rem; }

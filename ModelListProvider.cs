@@ -7,12 +7,14 @@ namespace Hartsy.Extensions.MagicPromptExtension;
 public static class ModelListProvider
 {
     private const string LoadingPlaceholder = "loading///loading";
+    private const string DecisionSettingsDefault = "///Settings default";
     private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(10);
     private static readonly object _cacheLock = new();
     private static JObject _cachedResponse;
     private static DateTime _cacheTimeUtc;
+    private static JArray _cachedDecisionModels;
 
-    /// <summary>Discard the catalog after a provider or preference change.</summary>
+    /// <summary>Discard the prompt-model catalog after a provider or preference change.</summary>
     public static void InvalidateCache()
     {
         lock (_cacheLock)
@@ -141,6 +143,50 @@ public static class ModelListProvider
         return options;
     }
 
+    public static List<string> GetDecisionModelList(Session session)
+    {
+        // Swarm lists parameter values synchronously, including when decision checks are disabled.
+        JArray models;
+        lock (_cacheLock)
+        {
+            models = _cachedDecisionModels;
+        }
+        if (models == null) return [DecisionSettingsDefault];
+
+        JObject settings = SessionSettings.GetMagicPromptSettings().GetAwaiter().GetResult()["settings"] as JObject;
+        return FormatDecisionModelOptions(settings?["decisions"], models);
+    }
+
+    internal static void CacheDecisionModels(JArray models)
+    {
+        lock (_cacheLock)
+        {
+            _cachedDecisionModels = models;
+        }
+    }
+
+    internal static List<string> FormatDecisionModelOptions(JToken settings, JArray models)
+    {
+        List<string> options = [DecisionSettingsDefault];
+        HashSet<string> blocked = new((settings?["blockedModels"] as JArray ?? []).Values<string>(), StringComparer.OrdinalIgnoreCase);
+        HashSet<string> favorites = new((settings?["favoritedModels"] as JArray ?? []).Values<string>(), StringComparer.OrdinalIgnoreCase);
+        var orderedModels = models.OfType<JObject>()
+            .Where(row => !blocked.Contains((string)row["model"]))
+            .OrderByDescending(row => favorites.Contains((string)row["model"]))
+            .ThenByDescending(row => long.TryParse(row["created"]?.ToString(), out long created) ? created : 0);
+
+        foreach (JObject row in orderedModels)
+        {
+            string id = (string)row["model"];
+            string name = (string)row["name"];
+            List<string> prices = [$"{(string)row["costIn"] ?? "—"} / 1M in"];
+            if ((string)row["costOut"] is string output and not "$0") prices.Add($"{output} / 1M out");
+            if ((string)row["costRequest"] is string request and not "$0") prices.Add($"{request} / request");
+            options.Add($"{id}///{(string.IsNullOrWhiteSpace(name) ? id : name)} · {string.Join(" · ", prices)}");
+        }
+        return options;
+    }
+
     public static List<string> GetInstructionList(Session session)
     {
         var defaultResponse = new List<string> { LoadingPlaceholder };
@@ -189,9 +235,7 @@ public static class ModelListProvider
             }
         }
 
-        var response = LLMAPICalls.GetMagicPromptModels(session)
-            .GetAwaiter()
-            .GetResult();
+        var response = LLMAPICalls.GetMagicPromptModels(session).GetAwaiter().GetResult();
 
         lock (_cacheLock)
         {

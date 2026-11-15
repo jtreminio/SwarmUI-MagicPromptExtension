@@ -1,0 +1,71 @@
+async page => {
+    const failures = [];
+    const check = (value, message) => { if (!value) failures.push(message); };
+    await page.reload();
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.waitForFunction(() => MP.settingsLoaded && MP.modelCatalogs?.['openrouter-decisions']);
+    const trigger = page.locator('#mp_decision_model_dropdown_trigger');
+    const menu = page.locator('#mp_decision_model_dropdown_popover');
+    await trigger.click();
+    await menu.locator('input').fill('typesafe/new');
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('Enter');
+    check(await page.locator('#input_mpdecisionmodelid').inputValue() === 'typesafe/new', 'Keyboard cannot select a filtered decision model');
+    check((await trigger.getAttribute('aria-label')).includes('New decision'), 'Accessible name omits the selected model');
+    check(await trigger.evaluate(el => el === document.activeElement), 'Selection did not return focus to the trigger');
+    await page.keyboard.press('Escape');
+    await page.evaluate(() => { const select = document.getElementById('input_mpdecisionmodelid'); select.value = 'typesafe/new'; triggerChangeFor(select); });
+    await trigger.click();
+    await menu.locator('input').fill('Settings default');
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('Enter');
+    check(await page.locator('#input_mpdecisionmodelid').inputValue() === '', 'Keyboard cannot return to Settings default');
+    await page.keyboard.press('Escape');
+    await page.evaluate(() => {
+        const select = document.getElementById('input_mpdecisionmodelid');
+        select.value = 'typesafe/new'; triggerChangeFor(select);
+        MP.blockModelId('decisions', 'typesafe/new');
+    });
+    await page.waitForFunction(() => testSettings.decisions?.blockedModels.includes('typesafe/new'));
+    check(/blocked/i.test(await trigger.textContent()), 'Blocked selected model has no visible warning');
+    check(/blocked/i.test(await trigger.getAttribute('aria-label')), 'Accessible name omits the blocked warning');
+    check(await page.locator('#input_mpdecisionmodelid').inputValue() === 'typesafe/new', 'Blocking silently substituted a different model');
+    await page.evaluate(() => {
+        window.gen_param_types = [{ id: 'mpdecisionmodelid', values: [''], value_names: ['Settings default'] }];
+        document.body.insertAdjacentHTML('beforeend', '<select id="preset_input_mpdecisionmodelid"><option value="missing/stale">Old saved model</option></select>');
+        mpRefreshDecisionModelControls();
+    });
+    check(await page.evaluate(() => !gen_param_types[0].values.includes('missing/stale')), 'Stale preset model leaked into shared choices');
+    check(await page.locator('#preset_input_mpdecisionmodelid').inputValue() === 'missing/stale', 'Stale preset selection was lost');
+    await trigger.click();
+    await menu.locator('input').fill('Settings default');
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('Space');
+    check(await page.locator('#input_mpdecisionmodelid').inputValue() === '' && await trigger.getAttribute('aria-invalid') === 'false', 'Keyboard recovery did not clear the blocked selection and warning');
+    await page.evaluate(() => {
+        MP.settings.decisions.blockedModels = ['TYPESAFE/NEW'];
+        MP.settings.decisions.favoritedModels = ['TYPESAFE/OLD'];
+        document.getElementById('input_mpdecisionmodelid').value = '';
+        mpRefreshDecisionModelControls();
+    });
+    await trigger.click();
+    check(await menu.locator('.mp-model-dropdown-row').filter({ hasText: 'New decision' }).count() === 0, 'Mixed-case blocked model is still selectable');
+    check(await menu.locator('.mp-model-dropdown-row').filter({ hasText: 'Older decision' }).locator('.mp-model-dropdown-star-active').count() === 1, 'Mixed-case favorite is not starred');
+    await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: 'MagicPrompt Settings', exact: true }).click();
+    await page.getByRole('tab', { name: 'Decision Models', exact: true }).click();
+    check(await page.locator('#mpDecisionModelSelect option[value="typesafe/new"]').count() === 0, 'Settings offers a mixed-case blocked model');
+    check(await page.locator('#mpDecisionBlockedModels option:checked').evaluateAll(options => options.map(option => option.value).join()) === 'typesafe/new', 'Mixed-case block is not represented by its catalog entry');
+    check(await page.locator('#mpDecisionFavoriteModels option:checked').evaluateAll(options => options.map(option => option.value).join()) === 'typesafe/old', 'Mixed-case favorite is not represented by its catalog entry');
+    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await page.locator('#settingsModal').waitFor({ state: 'hidden' });
+    // The shared prompt-model picker must retain keyboard support too.
+    await page.locator('#mp_model_dropdown_trigger').click();
+    const promptMenu = page.locator('#mp_model_dropdown_popover');
+    await promptMenu.locator('input').fill('local/model-b');
+    await page.keyboard.press('ArrowUp');
+    await page.keyboard.press('Enter');
+    check(await page.locator('#input_mpmodelid').inputValue() === 'local/model-b', 'Shared prompt picker keyboard selection regressed');
+    if (failures.length) throw new Error(failures.join('\n'));
+    return 'Approved picker fixes: keyboard selection/default, blocked warning, isolated stale presets, case-insensitive preferences passed';
+}

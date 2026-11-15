@@ -15,9 +15,9 @@ internal static class DecisionChecks
         DecisionEvaluator.ResolveSelection(DecisionEvaluator.NormalizeSettings(settings["decisions"]), id, RemoteEndpoint);
     internal static async Task Run()
     {
-        CheckRuntimeLifecycle();
+        OpenRouterDecisionChecks.Run();
         JObject settings = JObject.Parse("""
-            {"decisions":{"evaluator":"jev","questions":[
+            {"decisions":{"model":"typesafe/test","questions":[
               {"id":"refusal","question":"Did the model refuse?","type":"noul","options":[],"selected":true},
               {"id":"rating","question":"How useful was the prompt?","type":"score","options":["Poor","Fair","Good"],"selected":true},
               {"id":"unused","question":"Unused?","type":"noul","options":[],"selected":false}]}}
@@ -140,27 +140,6 @@ internal static class DecisionChecks
             Program.DataDir = dataDir;
             temporary.Delete(recursive: true);
         }
-        if (Environment.GetEnvironmentVariable("MP_TEST_DECISION_RUNTIME") == "1")
-        {
-            settings["decisions"]["questions"][0]["selected"] = true;
-            foreach (string evaluator in new[] { "startlux", "jev" })
-            {
-                settings["decisions"]["evaluator"] = evaluator;
-                settings["decisions"]["questions"][0]["skipIf"] = "";
-                source["decision_evidence"] = "I’m sorry, but I can’t help generate that prompt.";
-                records.Clear();
-                await DecisionEvaluator.EvaluateAsync(source, Select(settings), 2, DecisionEvaluator.RequestAsync, records.Add, CancellationToken.None);
-                if (records.Count != 2 || records.Any(record => (string)record["status"] != "ok") || (bool)records[0]["answer"] != true)
-                    throw new Exception($"{evaluator} real decision check failed: {new JArray(records)}");
-                records.Clear();
-                settings["decisions"]["questions"][0]["skipIf"] = "yes";
-                var matched = await DecisionEvaluator.EvaluateAsync(source, Select(settings, "refusal"), 2, DecisionEvaluator.RequestAsync, records.Add,
-                    CancellationToken.None);
-                if (matched == null || records.Count != 1 || (bool?)records[0]["generation_skipped"] != true)
-                    throw new Exception($"{evaluator} did not record the expected live decision match.");
-                Console.WriteLine($"Verified local decision bridge and Skip If match: {evaluator} ({matched["evaluator_model"]})");
-            }
-        }
     }
 
     private static async Task CheckCancellation(JObject source, DecisionEvaluator.Selection selection)
@@ -198,44 +177,6 @@ internal static class DecisionChecks
             throw new Exception("A fresh fetch must not reuse or replace cached results.");
     }
 
-    private static void CheckRuntimeLifecycle()
-    {
-        if (!OperatingSystem.IsLinux()) return;
-        DirectoryInfo temporary = Directory.CreateTempSubdirectory("mp-runtime-startup-");
-        try
-        {
-            string extension = Path.Combine(temporary.FullName, "extension with spaces");
-            string models = Path.Combine(temporary.FullName, "models with spaces");
-            string scripts = Path.Combine(extension, "DecisionRuntime");
-            Directory.CreateDirectory(scripts);
-            string runtime = Path.Combine(models, "decision-runtime");
-            File.WriteAllText(Path.Combine(scripts, "run.sh"), """
-                trap 'touch "$1/stopped"; exit 0' TERM
-                printf '%s' "$1" > "$1/started"
-                while true; do sleep 0.1; done
-                """);
-            if (DecisionRuntimeHost.Start(extension, models) != null)
-                throw new Exception("Startup should skip an absent runtime.");
-            Directory.CreateDirectory(Path.Combine(runtime, "venv", "bin"));
-            File.WriteAllText(Path.Combine(runtime, "venv", "bin", "startlux-decide"), "installed fixture");
-            using var launcher = DecisionRuntimeHost.Start(extension, $"{temporary.FullName};{models}");
-            if (launcher == null) throw new Exception("Startup did not launch the mounted runtime.");
-            try
-            {
-                string started = Path.Combine(runtime, "started");
-                if (!SpinWait.SpinUntil(() => File.Exists(started) && new FileInfo(started).Length > 0, TimeSpan.FromSeconds(5)) || File.ReadAllText(started) != runtime)
-                    throw new Exception("Startup did not pass the mounted runtime directory as one argument.");
-            }
-            finally { DecisionRuntimeHost.Stop(launcher); }
-            if (!launcher.HasExited || !File.Exists(Path.Combine(runtime, "stopped")))
-                throw new Exception("Shutdown did not let the launcher stop gracefully.");
-        }
-        finally
-        {
-            temporary.Delete(recursive: true);
-        }
-    }
-
     private static async Task CheckSkipRules(JObject source)
     {
         async Task Check(string type, JToken answer, string rule, bool shouldSkip, bool evaluatorFailed = false)
@@ -245,7 +186,7 @@ internal static class DecisionChecks
                 ["id"] = "test", ["title"] = "Test decision", ["question"] = "Test question?", ["type"] = type, ["selected"] = true,
                 ["options"] = type == "noul" ? new JArray() : new JArray("Declined", "Partial", "Accepted"), ["skipIf"] = rule
             };
-            var settings = new JObject { ["decisions"] = new JObject { ["evaluator"] = "jev", ["questions"] = new JArray(question) } };
+            var settings = new JObject { ["decisions"] = new JObject { ["model"] = "typesafe/test", ["questions"] = new JArray(question) } };
             List<JObject> logged = [];
             JObject match = await DecisionEvaluator.EvaluateAsync(source, Select(settings, "test"), 0, (_, _) => evaluatorFailed
                 ? Task.FromException<JObject>(new InvalidOperationException("offline"))
@@ -280,7 +221,7 @@ internal static class DecisionChecks
         await Check("score", 1, "1", false);
 
         JObject scoped = JObject.Parse("""
-            {"instructions":{"prompt":"Default","skipIf":{"prompt":"yes"}},"decisions":{"evaluator":"jev","questions":[
+            {"instructions":{"prompt":"Default","skipIf":{"prompt":"yes"}},"decisions":{"model":"typesafe/test","questions":[
               {"id":"first","title":"No rule","question":"Did it refuse?","type":"noul","options":[],"selected":true},
               {"id":"second","title":"Skip on yes","question":"Did it mention a refusal?","type":"noul","options":[],"selected":true,"skipIf":"yes"},
               {"id":"third","title":"Rating","question":"How good was it?","type":"score","options":["Poor","Good"],"selected":true,"skipIf":"1"}]}}

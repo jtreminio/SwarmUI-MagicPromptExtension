@@ -260,7 +260,7 @@ document.addEventListener("DOMContentLoaded", async function () {
         mpRefreshInstructionPrefixes();
         // Setup auto wildcard seed generation on Generate click (capture phase, before onclick)
         wildcardSeedGenerator();
-        await fetchModels();
+        await Promise.all([fetchModels(), fetchModels(mpDecisionModelSettings()).catch(() => {})]);
         updateModelListOnLeft(true);
     } catch (error) {
         console.error('Error initializing MagicPrompt:', error);

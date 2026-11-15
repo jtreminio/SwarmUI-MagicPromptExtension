@@ -15,10 +15,7 @@
 
 'use strict';
 
-(function () {
-  const SELECT_ID = 'input_mpmodelid';
-  const TRIGGER_ID = 'mp_model_dropdown_trigger';
-  const POPOVER_ID = 'mp_model_dropdown_popover';
+function mpInstallModelDropdown(SELECT_ID, TRIGGER_ID, POPOVER_ID, decisions = false) {
   const INPUTS_AREA_IDS = ['main_inputs_area', 'main_inputs_area_hidden', 'simple_inputs_area'];
 
   /** @type {HTMLDivElement|null} */
@@ -26,6 +23,7 @@
   let attachedSelect = null;
   let labelObserver = null;
   let changeListener = null;
+  document.addEventListener('mp-model-dropdown-open', () => closePopover());
 
   function ensureAttached() {
     let select = document.getElementById(SELECT_ID);
@@ -33,7 +31,7 @@
       return;
     }
     let existingTrigger = document.getElementById(TRIGGER_ID);
-    if (existingTrigger && existingTrigger.previousElementSibling === select) {
+    if (existingTrigger && existingTrigger.previousElementSibling === select && attachedSelect === select) {
       return;
     }
     if (existingTrigger) {
@@ -55,7 +53,8 @@
     trigger.type = 'button';
     trigger.id = TRIGGER_ID;
     trigger.className = 'mp-model-dropdown-trigger';
-    trigger.setAttribute('aria-haspopup', 'listbox');
+    trigger.setAttribute('aria-haspopup', 'dialog');
+    if (decisions) trigger.setAttribute('aria-label', 'MP Decision Model ID');
     trigger.setAttribute('aria-expanded', 'false');
 
     select.parentNode.insertBefore(trigger, select.nextSibling);
@@ -80,21 +79,16 @@
 
   function syncTriggerLabel(select, trigger) {
     let opt = select.options[select.selectedIndex];
-    if (opt && opt.value && opt.text) {
-      trigger.textContent = opt.text;
-      trigger.classList.remove('mp-model-dropdown-empty');
-      return;
-    }
-    if (select.options.length > 0 && select.options[0].text) {
-      trigger.textContent = select.options[0].text;
-      trigger.classList.remove('mp-model-dropdown-empty');
-      return;
-    }
-    trigger.textContent = '— No models —';
-    trigger.classList.add('mp-model-dropdown-empty');
+    const blocked = decisions && opt?.dataset.blocked === '1';
+    const label = opt?.value && opt.text ? opt.text : select.options[0]?.text;
+    trigger.setAttribute('aria-invalid', String(blocked));
+    trigger.title = blocked ? 'This decision model is blocked. Choose another model or Settings default.' : '';
+    trigger.textContent = blocked ? `${label} (blocked — choose another model)` : label || '— No models —';
+    trigger.classList.toggle('mp-model-dropdown-empty', !label);
+    if (decisions) trigger.setAttribute('aria-label', `MP Decision Model ID: ${trigger.textContent}`);
   }
 
-  function closePopover() {
+  function closePopover(focus = false) {
     if (!openPopover) {
       return;
     }
@@ -105,6 +99,7 @@
     let trigger = document.getElementById(TRIGGER_ID);
     if (trigger) {
       trigger.setAttribute('aria-expanded', 'false');
+      if (focus) trigger.focus();
     }
   }
 
@@ -116,18 +111,21 @@
 
   function onDocKeyDown(e) {
     if (e.key === 'Escape') {
-      closePopover();
+      closePopover(true);
     }
   }
 
   function openDropdown(select, trigger) {
     closePopover();
 
-    let backendKey = (window.MP && MP.settings && MP.settings.backend) || 'openrouter';
+    document.dispatchEvent(new Event('mp-model-dropdown-open'));
+    let backendKey = decisions ? 'decisions' : (window.MP && MP.settings && MP.settings.backend) || 'openrouter';
 
     let popover = document.createElement('div');
     popover.id = POPOVER_ID;
     popover.className = 'sui-popover sui_popover_model sui-popover-visible mp-model-dropdown-popover';
+    popover.setAttribute('role', 'dialog');
+    popover.setAttribute('aria-label', decisions ? 'Choose a decision model' : 'Choose a model');
     popover.style.position = 'absolute';
     popover.style.zIndex = '2000';
 
@@ -135,6 +133,7 @@
     search.type = 'text';
     search.placeholder = 'Search...';
     search.className = 'sui_popover_text_input mp-model-dropdown-search';
+    search.setAttribute('aria-label', 'Search models');
     popover.appendChild(search);
 
     let listArea = document.createElement('div');
@@ -143,11 +142,11 @@
 
     let rows = [];
     let lastFavoritedRow = null;
-    let blocked = new Set((window.MP && MP.settings && MP.settings.blockedModels &&
-      MP.settings.blockedModels[backendKey]) || []);
+    const modelKey = id => decisions ? id.toLowerCase() : id;
+    let blocked = new Set(((decisions ? window.MP?.settings?.decisions?.blockedModels : window.MP?.settings?.blockedModels?.[backendKey]) || []).map(modelKey));
     for (let i = 0; i < select.options.length; i++) {
       let opt = select.options[i];
-      if (!opt.value || blocked.has(opt.value) || opt.dataset.blocked === '1') {
+      if ((!opt.value && !decisions) || blocked.has(modelKey(opt.value)) || opt.dataset.blocked === '1' || (decisions && opt.dataset.unavailable === '1')) {
         continue;
       }
       let row = buildRow(opt, select, trigger, backendKey);
@@ -193,11 +192,20 @@
       }
     }
     search.addEventListener('input', applyFilter);
-    search.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        closePopover();
-      }
+    popover.addEventListener('keydown', (e) => {
+      if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
+      // Keep text editing and star/block buttons' keyboard behavior intact.
+      if (e.target !== search && !e.target.matches('button.mp-model-dropdown-row-label')) return;
+      if (e.target === search && ['Home', 'End'].includes(e.key)) return;
+      const choices = rows.filter(row => row.el.isConnected && row.el.style.display !== 'none')
+        .map(row => row.el.querySelector('button.mp-model-dropdown-row-label'));
+      if (!choices.length) return;
+      e.preventDefault();
+      const current = choices.indexOf(e.target);
+      const next = e.key === 'Home' ? 0 : e.key === 'End' ? choices.length - 1
+        : current < 0 ? (e.key === 'ArrowDown' ? 0 : choices.length - 1)
+        : (current + (e.key === 'ArrowDown' ? 1 : -1) + choices.length) % choices.length;
+      choices[next].focus();
     });
 
     document.body.appendChild(popover);
@@ -285,7 +293,8 @@
       row.classList.add('mp-model-dropdown-row-favorited');
     }
 
-    let label = document.createElement('span');
+    let label = document.createElement('button');
+    label.type = 'button';
     label.className = 'mp-model-dropdown-row-label';
     label.textContent = opt.text;
     row.appendChild(label);
@@ -308,6 +317,7 @@
     removeBtn.setAttribute('aria-label', 'Block ' + opt.text);
     removeBtn.textContent = '×';
     row.appendChild(removeBtn);
+    if (decisions && !opt.value) { starBtn.hidden = true; removeBtn.hidden = true; }
 
     // mousedown on the row buttons must not trigger a row-select reaction.
     starBtn.addEventListener('mousedown', (e) => {
@@ -387,7 +397,7 @@
         triggerChangeFor(select);
       }
       syncTriggerLabel(select, trigger);
-      closePopover();
+      closePopover(true);
     });
 
     return {
@@ -400,12 +410,13 @@
 
   function observeInputsAreas() {
     let observed = 0;
+    const observationKey = decisions ? 'mpDecisionDropdownObserved' : 'mpDropdownObserved';
     for (let id of INPUTS_AREA_IDS) {
       let area = document.getElementById(id);
-      if (!area || area.dataset.mpDropdownObserved === '1') {
+      if (!area || area.dataset[observationKey] === '1') {
         continue;
       }
-      area.dataset.mpDropdownObserved = '1';
+      area.dataset[observationKey] = '1';
       new MutationObserver(() => ensureAttached())
         .observe(area, { childList: true, subtree: true });
       observed++;
@@ -428,4 +439,6 @@
   } else {
     init();
   }
-})();
+}
+mpInstallModelDropdown('input_mpmodelid', 'mp_model_dropdown_trigger', 'mp_model_dropdown_popover');
+mpInstallModelDropdown('input_mpdecisionmodelid', 'mp_decision_model_dropdown_trigger', 'mp_decision_model_dropdown_popover', true);

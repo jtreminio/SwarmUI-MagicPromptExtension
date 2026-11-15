@@ -88,3 +88,107 @@ test('default model excludes blocked selections, including IDs absent from the c
         assert.equal(select.value, '');
     }
 });
+
+test('decision settings migrate local evaluators and keep preferences independent', () => {
+    const context = setup();
+    const original = { backend: 'openaiapi', model: 'local-model', favoritedModels: { openrouter: ['shared'] }, decisions: {
+        evaluator: 'jev', model: 'shared', blockedModels: [' shared ', 'SHARED'], favoritedModels: ['shared', 'keep', 'keep'],
+        questions: [{ id: 'keep-rule', question: 'Refused?', skipIf: 'yes', selected: true }]
+    } };
+    const result = context.mpNormalizeSettings(original);
+    assert.equal(result.decisions.evaluator, undefined);
+    assert.equal(result.decisions.model, '');
+    assert.deepEqual(Array.from(result.decisions.blockedModels), ['shared']);
+    assert.deepEqual(Array.from(result.decisions.favoritedModels), ['keep']);
+    assert.deepEqual(Array.from(result.favoritedModels.openrouter), ['shared']);
+    assert.equal(result.model, 'local-model');
+    assert.deepEqual(JSON.parse(JSON.stringify(result.decisions.questions)), original.decisions.questions);
+    assert.equal(original.decisions.evaluator, 'jev');
+});
+
+test('decision model catalog and ordering are independent of the prompt provider', () => {
+    const context = setup();
+    context.Option = function(text, value) { this.text = text; this.value = value; this.dataset = {}; };
+    const saved = context.mpNormalizeSettings({ backend: 'openaiapi', model: 'local', decisions: { model: 'old', favoritedModels: ['old'], blockedModels: ['blocked'], questions: [] } });
+    const settings = context.mpDecisionModelSettings(saved);
+    assert.notEqual(context.mpCatalogKey(settings), context.mpCatalogKey(saved));
+    context.MP.modelCatalogs = {
+        [context.mpCatalogKey(settings)]: [{ model: 'new', created: 20 }, { model: 'old', created: 1 }, { model: 'blocked', created: 30 }],
+        [context.mpCatalogKey(saved)]: [{ model: 'local' }]
+    };
+    const select = { options: [], replaceChildren(...options) { this.options = options; }, add(option) { this.options.push(option); } };
+    context.mpFillModelSelect(select, settings, saved.decisions.model);
+    assert.deepEqual(select.options.map(option => option.value), ['', 'old', 'new']);
+    assert.equal(select.value, 'old');
+    assert.match(context.mpModelSelectOptionText({ model: 'native', decisionModel: true, costIn: '$0', costOut: '$0', costRequest: '$0.001' }), /\$0.001 \/ request/);
+});
+
+test('out-of-order refresh responses cannot replace a newer catalog', async () => {
+    const context = setup();
+    context.document = { getElementById: () => null };
+    context.renderModelSettings = () => {};
+    context.updateModelListOnLeft = () => {};
+    context.MP.settings = context.mpNormalizeSettings({ backend: 'openrouter' });
+    const calls = [];
+    context.genericRequest = (route, payload, done) => calls.push({ route, done });
+    const first = context.fetchModels();
+    const second = context.fetchModels();
+    calls[1].done({ success: true, models: [{ model: 'new' }] });
+    await second;
+    calls[0].done({ success: true, models: [{ model: 'stale' }] });
+    await first;
+    assert.equal(context.mpCatalog()[0].model, 'new');
+});
+
+test('Generate decision stars and blocks persist separately and clear a blocked default', async () => {
+    const context = setup();
+    context.MP.settings = context.mpNormalizeSettings({ backend: 'openrouter', model: 'chat',
+        favoritedModels: { openrouter: ['chat'] }, decisions: { model: 'judge', questions: [{ id: 'keep' }] } });
+    context.updateModelListOnLeft = () => {};
+    let saved;
+    context.mpPersistSettings = async value => { saved = JSON.parse(JSON.stringify(value)); };
+    context.MP.favoriteModelId('decisions', 'judge');
+    assert.equal(context.MP.isModelFavoritedForBackend('decisions', 'judge'), true);
+    context.MP.blockModelId('decisions', 'judge');
+    assert.equal(context.MP.settings.decisions.model, '');
+    assert.deepEqual(Array.from(context.MP.settings.decisions.favoritedModels), []);
+    assert.deepEqual(saved.decisions.blockedModels, ['judge']);
+    assert.equal(saved.decisions.questions, undefined, 'Preference writes must not overwrite a newer question library in another tab');
+    assert.equal(saved.decisions.model, undefined, 'Preference writes must not overwrite a newer shared default');
+    assert.equal(saved.blockedModels, undefined);
+    assert.deepEqual(Array.from(context.MP.settings.favoritedModels.openrouter), ['chat']);
+});
+
+test('a pending decision import cannot write into a reopened draft', async () => {
+    const context = setup();
+    context.document = { getElementById: () => ({ value: '' }) };
+    context.mpCaptureDecisionEditor = () => {};
+    context.mpRenderDecisionList = () => {};
+    context.mpRenderDecisionEditor = () => {};
+    context.mpSettingsStatus = () => {};
+    vm.runInContext('mpSettingsDraft = { decisions: { questions: [] } }', context);
+    let complete;
+    const pending = context.mpImportDecisions({ text: () => new Promise(resolve => { complete = resolve; }) });
+    vm.runInContext('mpSettingsDraft = { decisions: { questions: [] } }', context);
+    complete(JSON.stringify({ title: 'Cancelled import', question: 'Keep?', type: 'noul', options: [] }));
+    await pending;
+    assert.equal(vm.runInContext('mpSettingsDraft.decisions.questions.length', context), 0);
+});
+
+test('decision preference mutations match saved IDs regardless of case', () => {
+    const context = setup();
+    context.MP.settings = context.mpNormalizeSettings({ decisions: { model: 'JUDGE', questions: [], favoritedModels: ['JUDGE'] } });
+    context.updateModelListOnLeft = () => {};
+    context.mpPersistSettings = async () => ({});
+    assert.equal(context.MP.isModelFavoritedForBackend('decisions', 'judge'), true);
+    context.MP.blockModelId('decisions', 'judge');
+    assert.deepEqual(Array.from(context.MP.settings.decisions.favoritedModels), []);
+    assert.equal(context.MP.settings.decisions.model, '');
+    context.MP.unblockModelId('decisions', 'JUDGE');
+    assert.deepEqual(Array.from(context.MP.settings.decisions.blockedModels), []);
+    context.MP.favoriteModelId('decisions', 'JUDGE');
+    context.MP.favoriteModelId('decisions', 'judge');
+    assert.deepEqual(Array.from(context.MP.settings.decisions.favoritedModels), ['judge']);
+    context.MP.unfavoriteModelId('decisions', 'JUDGE');
+    assert.deepEqual(Array.from(context.MP.settings.decisions.favoritedModels), []);
+});

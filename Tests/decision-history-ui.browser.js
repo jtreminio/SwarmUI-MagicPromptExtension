@@ -13,7 +13,7 @@ async page => {
     await page.getByRole('tab', { name: 'Decisions' }).click();
     const firstQuestion = page.locator('.mp-decision-question').first();
     await firstQuestion.getByRole('textbox', { name: 'Skip If', exact: true }).fill('yes');
-    await page.getByRole('button', { name: 'Add question' }).click();
+    await page.getByRole('button', { name: 'New decision' }).click();
     const question = page.locator('.mp-decision-question').last();
     await question.getByRole('textbox', { name: 'Title' }).fill('prompt REFUSAL');
     await question.getByRole('textbox', { name: 'Question', exact: true }).fill('Did the model give an answer?');
@@ -36,6 +36,7 @@ async page => {
     await page.getByRole('button', { name: 'MagicPrompt Settings' }).click();
     await page.getByRole('tab', { name: 'Decisions' }).click();
     check(await firstQuestion.getByRole('textbox', { name: 'Skip If', exact: true }).inputValue() === 'yes', 'First question lost its own rule');
+    await page.locator('#mpDecisionList').getByRole('button', { name: 'Answered prompt', exact: true }).click();
     check(await secondRule.inputValue() === 'no', 'Second question lost its own rule');
     await page.getByRole('button', { name: 'Cancel', exact: true }).click();
     await page.locator('#settingsModal').waitFor({ state: 'hidden' });
