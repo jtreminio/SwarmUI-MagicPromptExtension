@@ -8,9 +8,15 @@
 .mp-stats th, .mp-stats td { padding: .65rem .55rem; border-bottom: 1px solid var(--border-color); vertical-align: middle; }
 .mp-stats thead { background: var(--background-gray, var(--background)); }
 .mp-stats thead th { white-space: nowrap; text-align: left; font-size: .8rem; }
+.mp-stats tbody > tr:nth-child(even of [data-key]) { background: color-mix(in srgb, var(--text) 5%, transparent); }
 .mp-stats tbody tr:last-child > * { border-bottom: 0; }
 .mp-stats th[scope="row"] { width: 100%; text-align: left; overflow-wrap: anywhere; }
-.mp-stats .mp-stats-group-heading th { padding: .4rem .55rem; background: var(--background-gray, var(--background)); text-align: left; font-size: .8rem; }
+.mp-stats .mp-stats-group-heading th { padding: 0; background: var(--background-gray, var(--background)); font-size: .8rem; }
+.mp-stats .mp-stats-group-toggle { display: flex; align-items: center; gap: .55rem; width: 100%; min-height: 32px; padding: .4rem .65rem; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.mp-stats .mp-stats-group-toggle:hover { background: color-mix(in srgb, var(--text) 8%, transparent); }
+.mp-stats .mp-stats-group-toggle:focus-visible { outline: 2px solid var(--text); outline-offset: -2px; }
+.mp-stats .mp-stats-group-toggle::before { content: ""; width: .45rem; height: .45rem; border-right: 2px solid; border-bottom: 2px solid; transform: rotate(-45deg); }
+.mp-stats .mp-stats-group-toggle[aria-expanded="true"]::before { transform: rotate(45deg); }
 .mp-stats .mp-stats-model { font-weight: 600; }
 .mp-stats .mp-stats-provider { margin-top: .125rem; color: var(--text-soft, var(--text)); font-weight: 400; font-size: .8rem; }
 .mp-stats .mp-stats-actions { display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .4rem; }
@@ -37,6 +43,7 @@
     .mp-stats thead { position: absolute; clip-path: inset(50%); width: 1px; height: 1px; overflow: hidden; }
     .mp-stats tbody tr { display: grid; border-top: 1px solid var(--border-color); padding: .48rem 0; }
     .mp-stats tbody tr > * { width: auto; padding: .23rem 0; border: 0; min-width: 0; }
+    .mp-stats tbody .mp-stats-group-heading { padding: 0; }
     .mp-stats td { display: flex; justify-content: space-between; align-items: start; gap: .3rem; }
     .mp-stats .mp-stats-caption { display: block; font-size: .8rem; font-weight: 500; }
     .mp-stats .mp-stats-rate { grid-template-columns: clamp(2rem, 17vw, 5rem) max-content; gap: .28rem; }

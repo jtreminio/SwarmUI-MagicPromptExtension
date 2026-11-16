@@ -2,6 +2,7 @@
 
 const MP_STATS_PROVIDERS = { openrouter: 'OpenRouter', openaiapi: 'Local OpenAI API' };
 const MP_STATS_GROUPS = ['Starred', 'Unstarred', 'Blocked'];
+const MP_STATS_COLLAPSED_GROUPS_KEY = 'magicprompt_stats_collapsed_groups';
 const MP_STATS_SORTS = {
     newest: { label: 'Newest model added' },
     skipHigh: { label: 'All-time Skip If, high to low', metric: 'allTime', direction: -1 },
@@ -219,6 +220,14 @@ function mpCreateStats() {
     let actionError = '';
     let shown = false;
     let usedModel = false;
+    const collapsedGroups = new Set();
+    try {
+        const saved = JSON.parse(localStorage.getItem(MP_STATS_COLLAPSED_GROUPS_KEY));
+        if (Array.isArray(saved)) {
+            for (const label of MP_STATS_GROUPS) if (saved.includes(label)) collapsedGroups.add(label);
+        }
+    }
+    catch { /* Keep all sections expanded if browser storage is unavailable or invalid. */ }
 
     function renderStatus() {
         status.classList.toggle('mp-status-error', !!(actionError || readError));
@@ -231,6 +240,7 @@ function mpCreateStats() {
     function render(focusAction) {
         const active = document.activeElement;
         const focusedRow = table.contains(active) ? active.closest('tr[data-key]') : null;
+        const focusedGroup = table.contains(active) && active.matches('.mp-stats-group-toggle') ? active.id : '';
         const sorted = mpStatsSortRows(models, sort.value);
         rows = new Map(sorted.map(model => [model.key, model]));
         if (!rows.has(confirmation)) confirmation = null;
@@ -245,15 +255,32 @@ function mpCreateStats() {
             section.setAttribute('role', 'rowgroup');
             const divider = mpStatsElement('tr', 'mp-stats-group-heading');
             divider.setAttribute('role', 'row');
-            const heading = mpStatsElement('th', '', MP_STATS_GROUPS[group]);
+            const heading = mpStatsElement('th');
             heading.scope = 'rowgroup';
             heading.colSpan = table.tHead.rows[0].cells.length;
             heading.setAttribute('role', 'rowheader');
+            const label = MP_STATS_GROUPS[group];
+            const collapsed = collapsedGroups.has(label);
+            const toggle = mpStatsElement('button', 'mp-stats-group-toggle', label);
+            toggle.type = 'button';
+            toggle.id = `mpStatsGroup${group}`;
+            toggle.setAttribute('aria-expanded', String(!collapsed));
+            toggle.addEventListener('click', () => {
+                const collapse = !collapsedGroups.has(label);
+                if (collapse) collapsedGroups.add(label);
+                else collapsedGroups.delete(label);
+                toggle.setAttribute('aria-expanded', String(!collapse));
+                for (const row of section.querySelectorAll('tr[data-key]')) row.hidden = collapse;
+                try { localStorage.setItem(MP_STATS_COLLAPSED_GROUPS_KEY, JSON.stringify([...collapsedGroups])); }
+                catch { /* The modal still remembers the choice in this page. */ }
+            });
+            heading.append(toggle);
             divider.append(heading);
             section.append(divider);
             for (const model of members) {
                 const canUse = group !== 2 && model.provider === MP.settings.backend && selectable.has(model.model);
                 const row = mpStatsTableRow(model, model.key === confirmation, !!busy, canUse);
+                row.hidden = collapsed;
                 section.append(row);
                 elements.set(model.key, row);
             }
@@ -262,10 +289,13 @@ function mpCreateStats() {
         table.replaceChildren(table.tHead, ...sections);
         table.hidden = !sorted.length;
         if (focusedRow) {
-            const target = elements.get(focusedRow.dataset.key)
-                ?.querySelector(`button[data-action="${focusAction || active.dataset.action}"]`);
+            const row = elements.get(focusedRow.dataset.key);
+            const target = row?.hidden
+                ? row.parentElement.querySelector('.mp-stats-group-toggle')
+                : row?.querySelector(`button[data-action="${focusAction || active.dataset.action}"]`);
             (target || refreshButton).focus();
         }
+        else if (focusedGroup) (document.getElementById(focusedGroup) || refreshButton).focus();
         renderStatus();
     }
 

@@ -4,6 +4,7 @@ async page => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.waitForFunction(() => MP.settingsLoaded && document.querySelector('#input_mpmodelid').options.length > 2);
     await page.evaluate(() => {
+        localStorage.removeItem('magicprompt_stats_collapsed_groups');
         testSettings.favoritedModels.openrouter = ['GOOGLE/MODEL-A'];
         MP.settings = mpNormalizeSettings(testSettings);
         testStats = [
@@ -39,6 +40,7 @@ async page => {
     const table = modal.getByRole('table', { name: 'Model stats' });
     const rows = table.locator('tbody tr[data-key]');
     const groupHeadings = table.getByRole('rowheader').and(table.locator('th[scope="rowgroup"]'));
+    const groupToggle = name => table.getByRole('button', { name, exact: true });
     const model = id => rows.filter({ has: page.locator('th').getByText(id, { exact: true }) });
     const sort = modal.getByRole('combobox', { name: 'Sort' });
     const refresh = modal.getByRole('button', { name: 'Refresh', exact: true });
@@ -71,6 +73,24 @@ async page => {
     check(await groupHeading(gemini).textContent() === 'Starred'
         && await groupHeading(aurora).textContent() === 'Unstarred'
         && await groupHeading(older).textContent() === 'Blocked', 'A model is under the wrong heading');
+    const starredToggle = groupToggle('Starred');
+    const blockedToggle = groupToggle('Blocked');
+    check(await starredToggle.getAttribute('aria-expanded', { timeout: 2000 }) === 'true', 'Sections should start expanded');
+    await starredToggle.click();
+    await blockedToggle.press('Space');
+    check(await starredToggle.getAttribute('aria-expanded') === 'false' && !await gemini.isVisible()
+        && await blockedToggle.getAttribute('aria-expanded') === 'false' && !await older.isVisible()
+        && await aurora.isVisible(), 'Section buttons should collapse their own rows independently');
+    await waitForFocus(blockedToggle);
+    await page.keyboard.press('Escape');
+    await modal.waitFor({ state: 'hidden' });
+    await opener.click();
+    check(await starredToggle.getAttribute('aria-expanded') === 'false'
+        && await blockedToggle.getAttribute('aria-expanded') === 'false' && !await gemini.isVisible()
+        && !await older.isVisible(), 'Reopening Stats should retain collapsed sections');
+    await starredToggle.press('Enter');
+    await blockedToggle.click();
+    check(await gemini.isVisible() && await older.isVisible(), 'Expanding a section should restore its rows');
     check(await table.getByRole('columnheader', { name: 'Completed requests' }).textContent() === '#', 'Completed count header is not #');
     check((await rows.last().textContent()).includes('Older Model'), 'Blocked row was not last');
     check(await action(geminiAlias, 'Unstar').isVisible(), 'Exact stats rows failed to share a case-insensitive preference');
@@ -157,6 +177,9 @@ async page => {
     check(await modal.evaluate(el => document.documentElement.scrollWidth <= innerWidth && el.scrollWidth <= innerWidth
         && el.querySelector('.modal-body').scrollWidth <= el.querySelector('.modal-body').clientWidth), 'Stats overflows mobile');
     check(await groupHeading(older).isVisible() && await errorLabelFollowsTrack(), 'Mobile loses group headings or separates the error rate');
+    await blockedToggle.click();
+    check(!await older.isVisible(), 'A collapsed section still displays rows on mobile');
+    await blockedToggle.click();
     await action(atlas, 'Block').scrollIntoViewIfNeeded();
     const actionBounds = await action(atlas, 'Block').boundingBox();
     check(actionBounds.x >= 0 && actionBounds.x + actionBounds.width <= 390
@@ -251,6 +274,8 @@ async page => {
     await refresh.click();
     await status.filter({ hasText: /Stats unavailable/ }).waitFor();
     check(await table.isVisible(), 'A refresh failure hid known stats');
+    const unstarredToggle = groupToggle('Unstarred');
+    await unstarredToggle.click();
     await page.evaluate(() => { testStatsFailures.read = ''; testStats = []; });
     await refresh.click();
     await status.filter({ hasText: 'No model stats yet.' }).waitFor();
@@ -274,6 +299,9 @@ async page => {
         window.permissions = { hasPermission: id => id !== 'magicprompt_reset_stats' };
     });
     await opener.click();
+    check(await unstarredToggle.getAttribute('aria-expanded') === 'false' && !await model('local/a').isVisible(),
+        'Reloading the browser should retain collapsed sections');
+    await unstarredToggle.click();
     await model('local/a').waitFor();
     await page.waitForFunction(() => MP.settings.backend === 'openaiapi');
     check(await action(model('local/model-b'), 'Use').count() === 0, 'Use offered an option left over from the previous provider');
