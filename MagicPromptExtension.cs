@@ -40,8 +40,9 @@ public class MagicPromptExtension : Extension
         ScriptFiles.Add("Assets/settings.js");
         ScriptFiles.Add("Assets/modeldropdown.js");
         ScriptFiles.Add("Assets/prompthistory.js");
-        ScriptFiles.Add("Assets/decisionhistory.js");
+        ScriptFiles.Add("Assets/stats.js");
         StyleSheetFiles.Add("Assets/settings.css");
+        StyleSheetFiles.Add("Assets/stats.css");
         StyleSheetFiles.Add("Assets/modeldropdown.css");
         StyleSheetFiles.Add("Assets/prompthistory.css");
     }
@@ -142,7 +143,7 @@ public class MagicPromptExtension : Extension
 
         _paramDecisionChecks = T2IParamTypes.Register<bool>(new T2IParamType(
             Name: "MP Decision Checks",
-            Description: "Run the selected decision questions on newly fetched remote LLM responses. Results are logged for comparison.",
+            Description: "Run the selected decision questions on newly fetched remote LLM responses. Results are included in image metadata.",
             Default: "false",
             IgnoreIf: "false",
             Group: paramGroup,

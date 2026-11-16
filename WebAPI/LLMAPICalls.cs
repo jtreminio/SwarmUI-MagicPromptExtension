@@ -367,7 +367,7 @@ public class LLMAPICalls : MagicPromptAPI
             string modelId = requestData["modelId"]?.ToString();
             string action = requestData["action"]?.ToString()?.ToLower() ?? "prompt";
             string thinking = NormalizeThinking(requestData["thinking"]?.ToString());
-            if (string.IsNullOrEmpty(modelId))
+            if (string.IsNullOrWhiteSpace(modelId))
             {
                 return CreateErrorResponse("Model ID is missing");
             }
@@ -390,7 +390,7 @@ public class LLMAPICalls : MagicPromptAPI
             }
             string backend = settings["backend"].ToString().ToLowerInvariant();
             string endpoint = GetEndpoint(backend, settings, "chat");
-            if (string.IsNullOrEmpty(endpoint))
+            if (!Uri.TryCreate(endpoint, UriKind.Absolute, out Uri uri) || uri.Scheme is not ("http" or "https"))
             {
                 return CreateErrorResponse($"Failed to get endpoint for {backend}");
             }
@@ -411,7 +411,7 @@ public class LLMAPICalls : MagicPromptAPI
             messageContent.Instructions = clientProvidedInstructions;
             messageContent.Text = $"{messageContent.Text}";
             // Create request with proper headers and body
-            using HttpRequestMessage request = new(HttpMethod.Post, endpoint);
+            using HttpRequestMessage request = new(HttpMethod.Post, uri);
             if (!ConfigureRequest(request, backend, settings, session, out string error))
             {
                 Logs.Error($"MagicPromptExtension.LLMAPICalls: {error}");
@@ -431,6 +431,9 @@ public class LLMAPICalls : MagicPromptAPI
             }
             string jsonContent = JsonSerializer.Serialize(requestBody);
             request.Content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
+            ModelStats.Attempt attempt = null;
+            JObject successfulResult = null;
+            double latency = 0;
             try
             {
                 // Send request and handle response
@@ -439,12 +442,18 @@ public class LLMAPICalls : MagicPromptAPI
                 int defaultTimeout = backend == "openaiapi" ? 120 : 60;
                 int timeoutSec = GetBackendTimeout(settings, backend, defaultTimeout);
                 Logs.Debug($"[MagicPrompt] Using timeout of {timeoutSec} seconds for {backend}");
-                using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSec));
+                using var timeoutCts = new CancellationTokenSource();
                 using var requestCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, interruptToken);
-                var requestStarted = System.Diagnostics.Stopwatch.StartNew();
-                using HttpResponseMessage response = await HttpClient.SendAsync(request, requestCts.Token);
+                interruptToken.ThrowIfCancellationRequested();
+                var pendingAttempt = ModelStats.BeginAttempt(backend, modelId);
+                interruptToken.ThrowIfCancellationRequested();
+                timeoutCts.CancelAfter(TimeSpan.FromSeconds(timeoutSec));
+                attempt = pendingAttempt;
+                long requestStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+                using HttpResponseMessage response = await HttpClient.SendAsync(request, HttpCompletionOption.ResponseContentRead, requestCts.Token);
+                latency = System.Diagnostics.Stopwatch.GetElapsedTime(requestStarted).TotalMilliseconds;
                 string responseContent = await response.Content.ReadAsStringAsync(requestCts.Token);
-                double latency = requestStarted.Elapsed.TotalMilliseconds;
+                interruptToken.ThrowIfCancellationRequested();
                 // Handle API errors indicated by status code
                 if (!response.IsSuccessStatusCode)
                 {
@@ -457,14 +466,15 @@ public class LLMAPICalls : MagicPromptAPI
                 try
                 {
                     string llmResponse = await DeserializeResponse(response, backend);
-                    if (!string.IsNullOrEmpty(llmResponse))
+                    if (!string.IsNullOrWhiteSpace(llmResponse))
                     {
                         JObject result = CreateSuccessResponse(llmResponse);
                         if (includeDecisionSource)
                         {
                             DecisionEvaluator.CaptureSource(result, responseContent, endpoint, backend, modelId, latency);
                         }
-                        return result;
+                        successfulResult = result;
+                        return successfulResult;
                     }
                 }
                 catch (Exception ex)
@@ -505,6 +515,11 @@ public class LLMAPICalls : MagicPromptAPI
             {
                 Logs.Error($"MagicPromptExtension.LLMAPICalls: Error in MagicPromptPhoneHome: {ex.Message}");
                 return CreateErrorResponse(ErrorHandler.FormatErrorMessage(ErrorType.GenericException, ex.Message, backend));
+            }
+            finally
+            {
+                if (!interruptToken.IsCancellationRequested)
+                    ModelStats.CompleteAttempt(attempt, successfulResult != null ? latency : null, includeDecisionSource ? successfulResult : null);
             }
         }
         catch (OperationCanceledException) when (interruptToken.IsCancellationRequested)

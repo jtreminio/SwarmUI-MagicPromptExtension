@@ -4,6 +4,7 @@
 const MP_BACKENDS = ['openrouter', 'openaiapi'];
 const MP_BUILTINS = { prompt: 'Default prompt', randomprompt: 'Random prompt', instructiongen: 'Instruction generator' };
 let mpSettingsDraft = null;
+let mpPromptPreferencesAtOpen = null;
 let mpEditingInstruction = 'prompt';
 let mpEditingDecision = null;
 let mpSettingsBusy = false;
@@ -11,6 +12,7 @@ let mpSettingsOpening = false;
 let mpSettingsCloseQueued = false;
 const mpCatalogRequests = new Map();
 let mpSaveQueue = Promise.resolve();
+let mpSettingsLoad;
 
 function mpRequest(route, payload = {}) {
     return new Promise((resolve, reject) => genericRequest(route, payload, data => {
@@ -48,27 +50,47 @@ function mpNormalizeSettings(settings) {
     for (const key of ['blockedModels', 'favoritedModels']) {
         result[key] ||= {};
         for (const backend of MP_BACKENDS) {
-            result[key][backend] = [...new Set((result[key][backend] || []).filter(id => typeof id === 'string' && id.trim()))];
+            const ids = new Map();
+            for (const id of result[key][backend] || []) {
+                if (typeof id === 'string' && id.trim() && !ids.has(mpModelIdKey(id))) ids.set(mpModelIdKey(id), id.trim());
+            }
+            result[key][backend] = [...ids.values()];
         }
     }
     for (const backend of MP_BACKENDS) {
-        result.favoritedModels[backend] = result.favoritedModels[backend].filter(id => !result.blockedModels[backend].includes(id));
+        const blocked = new Set(result.blockedModels[backend].map(mpModelIdKey));
+        result.favoritedModels[backend] = result.favoritedModels[backend].filter(id => !blocked.has(mpModelIdKey(id)));
     }
     return result;
 }
 
-async function loadSettings() {
-    MP.settings = mpNormalizeSettings((await mpRequest('GetMagicPromptSettings')).settings);
-    MP.settingsLoaded = true;
-    return MP.settings;
+function loadSettings() {
+    const writes = mpSaveQueue;
+    if (mpSettingsLoad?.writes === writes) return mpSettingsLoad.request;
+    const request = writes.catch(() => {}).then(async () => {
+        const { settings } = await mpRequest('GetMagicPromptSettings');
+        if (writes === mpSaveQueue) {
+            MP.settings = mpNormalizeSettings(settings);
+            MP.settingsLoaded = true;
+        }
+        return MP.settings;
+    }).finally(() => {
+        if (mpSettingsLoad?.request === request) mpSettingsLoad = null;
+    });
+    mpSettingsLoad = { writes, request };
+    return request;
 }
 
 /** Serialize writes so rapid preference edits cannot arrive out of order. */
-function mpPersistSettings(settings) {
-    const snapshot = JSON.parse(JSON.stringify(settings));
-    const pending = mpSaveQueue.catch(() => {}).then(() => mpRequest('SaveMagicPromptSettings', { settings: snapshot }));
+function mpQueueSettingsWrite(write) {
+    const pending = mpSaveQueue.catch(() => {}).then(write);
     mpSaveQueue = pending;
     return pending;
+}
+
+function mpPersistSettings(settings) {
+    const snapshot = JSON.parse(JSON.stringify(settings));
+    return mpQueueSettingsWrite(() => mpRequest('SaveMagicPromptSettings', { settings: snapshot }));
 }
 
 function mpSettingsStatus(message, error = false) {
@@ -91,7 +113,7 @@ function mpModelSelectOptionText(row, showUnits = true) {
 }
 function mpCatalogKey(settings) { return settings.catalogKey || `${settings.backend}\n${settings.backends[settings.backend]?.baseurl || ''}`; }
 function mpCatalog(settings = mpCurrentSettings()) { return MP.modelCatalogs?.[mpCatalogKey(settings)] || []; }
-function mpModelIdKey(id, decisions) { return decisions ? id.toLowerCase() : id; }
+function mpModelIdKey(id) { return (id || '').trim().toLowerCase(); }
 
 /** Adapt decision preferences to the shared model controls without touching prompt settings. */
 function mpDecisionModelSettings(settings = mpCurrentSettings()) {
@@ -99,12 +121,12 @@ function mpDecisionModelSettings(settings = mpCurrentSettings()) {
         blockedModels: { openrouter: settings.decisions.blockedModels }, favoritedModels: { openrouter: settings.decisions.favoritedModels } };
 }
 
-async function fetchModels(settings = mpCurrentSettings()) {
+async function fetchModels(settings = mpCurrentSettings(), reportStatus = true) {
     const key = mpCatalogKey(settings);
     const request = (mpCatalogRequests.get(key) || 0) + 1;
     mpCatalogRequests.set(key, request);
     const decisions = key === 'openrouter-decisions';
-    mpSettingsStatus('Loading models…');
+    if (reportStatus) mpSettingsStatus('Loading models…');
     try {
         const response = await mpRequest(decisions ? 'GetMagicPromptDecisionModels' : 'GetMagicPromptModels', decisions ? {} : {
             backend: settings.backend, baseurl: settings.backends[settings.backend]?.baseurl || ''
@@ -112,28 +134,71 @@ async function fetchModels(settings = mpCurrentSettings()) {
         if (mpCatalogRequests.get(key) !== request) return response;
         MP.modelCatalogs ||= {};
         MP.modelCatalogs[key] = (response.models || []).filter(row => row && row.model);
-        if (decisions || key === mpCatalogKey(mpCurrentSettings())) {
+        if (reportStatus && (decisions || key === mpCatalogKey(mpCurrentSettings()))) {
             if (decisions) { renderDecisionModelSettings(); mpRefreshDecisionModelControls(); }
             else renderModelSettings();
             mpSettingsStatus(`${response.models.length} ${decisions ? 'decision ' : ''}models available.`);
         }
-        if (key === mpCatalogKey(MP.settings)) updateModelListOnLeft(true);
+        if (key === mpCatalogKey(MP.settings)) {
+            if (reportStatus) updateModelListOnLeft(true);
+            else mpRefreshPromptModelControls();
+        }
         return response;
     }
     catch (error) {
-        if (mpCatalogRequests.get(key) === request) mpSettingsStatus(`Could not load ${decisions ? 'decision ' : ''}models: ${error.message}`, true);
+        if (reportStatus && mpCatalogRequests.get(key) === request) mpSettingsStatus(`Could not load ${decisions ? 'decision ' : ''}models: ${error.message}`, true);
         throw error;
     }
 }
 
-/** Preserve explicit generation selections, even if a model was just blocked. */
-function updateModelListOnLeft(preserveSelection = true) {
-    const select = document.getElementById('input_mpmodelid');
-    const instructions = document.getElementById('input_mpinstructions');
-    if (select && mpCatalog(MP.settings).length) {
-        mpFillModelSelect(select, MP.settings, preserveSelection && select.value && select.value !== 'loading' ? select.value : MP.settings.model, preserveSelection);
+const mpNativePromptOptions = new WeakMap();
+
+/** Preserve explicit Generate and preset selections, even if a model was just blocked. */
+function mpRefreshPromptModelControls(preserveSelection = true) {
+    const settings = MP.settings;
+    for (const id of ['input_mpmodelid', 'preset_input_mpmodelid']) {
+        const select = document.getElementById(id);
+        if (!select) continue;
+        const selected = preserveSelection && select.value && select.value !== 'loading' ? select.value : settings.model;
+        if (mpCatalog(settings).length) {
+            mpNativePromptOptions.delete(select);
+            mpFillModelSelect(select, settings, selected, preserveSelection);
+        }
+        else {
+            const options = [...select.options];
+            const previous = select.value;
+            let original = mpNativePromptOptions.get(select);
+            if (!original || original.length !== options.length || options.some(option => !original.includes(option))) {
+                original = options;
+                mpNativePromptOptions.set(select, original);
+            }
+            const blocked = new Set(settings.blockedModels[settings.backend]?.map(mpModelIdKey));
+            const favorites = new Set(settings.favoritedModels[settings.backend]?.map(mpModelIdKey));
+            for (const option of options) {
+                const key = mpModelIdKey(option.value);
+                if (blocked.has(key)) {
+                    option.dataset.blocked = '1';
+                    option.style.display = 'none';
+                }
+                else if (option.dataset.blocked === '1') {
+                    delete option.dataset.blocked;
+                    option.style.removeProperty('display');
+                }
+                if (favorites.has(key)) option.dataset.favorited = '1';
+                else delete option.dataset.favorited;
+            }
+            const favorite = option => !!option.value && favorites.has(mpModelIdKey(option.value));
+            const ordered = original.slice().sort((a, b) => Number(!b.value) - Number(!a.value) || Number(favorite(b)) - Number(favorite(a)));
+            select.replaceChildren(...ordered);
+            select.value = options.some(option => option.value === selected) ? selected : previous;
+        }
         triggerChangeFor(select);
     }
+}
+
+function updateModelListOnLeft(preserveSelection = true) {
+    mpRefreshPromptModelControls(preserveSelection);
+    const instructions = document.getElementById('input_mpinstructions');
     if (instructions) {
         const previous = instructions.value;
         instructions.replaceChildren();
@@ -196,8 +261,8 @@ function mpRefreshDecisionControls() {
 function mpRefreshDecisionModelControls(rebuildCatalog = true) {
     if (!MP.settings.decisions) return;
     const settings = mpDecisionModelSettings(MP.settings);
-    const blocked = new Set(settings.blockedModels.openrouter.map(id => mpModelIdKey(id, true)));
-    const favorites = new Set(settings.favoritedModels.openrouter.map(id => mpModelIdKey(id, true)));
+    const blocked = new Set(settings.blockedModels.openrouter.map(mpModelIdKey));
+    const favorites = new Set(settings.favoritedModels.openrouter.map(mpModelIdKey));
     const label = settings.model ? `Settings default · ${settings.model}` : 'Settings default (not selected)';
     const param = typeof gen_param_types !== 'undefined' && gen_param_types?.find(row => row.id === 'mpdecisionmodelid');
     for (const prefix of ['input_', 'preset_input_']) {
@@ -212,8 +277,8 @@ function mpRefreshDecisionModelControls(rebuildCatalog = true) {
         for (const option of select.options) {
             delete option.dataset.blocked;
             delete option.dataset.favorited;
-            if (blocked.has(mpModelIdKey(option.value, true))) option.dataset.blocked = '1';
-            if (favorites.has(mpModelIdKey(option.value, true))) option.dataset.favorited = '1';
+            if (blocked.has(mpModelIdKey(option.value))) option.dataset.blocked = '1';
+            if (favorites.has(mpModelIdKey(option.value))) option.dataset.favorited = '1';
         }
         mpAddUnavailableDecisionOption(select, previous);
         select.value = previous;
@@ -275,7 +340,7 @@ function mpCompareModelDates(a, b, backend) {
 
 function mpFillModelSelect(select, settings, selected, preserveBlockedSelection = false) {
     const backend = settings.backend;
-    const key = id => mpModelIdKey(id, settings.catalogKey === 'openrouter-decisions');
+    const key = mpModelIdKey;
     const blocked = new Set(settings.blockedModels[backend].map(key));
     const favorites = new Set(settings.favoritedModels[backend].map(key));
     if (blocked.has(key(selected)) && !preserveBlockedSelection) selected = '';
@@ -310,31 +375,50 @@ function mpFillModelSelect(select, settings, selected, preserveBlockedSelection 
 function isModelFavoritedForBackend(backend, id) {
     const decisions = backend === 'decisions';
     return (decisions ? MP.settings.decisions.favoritedModels : MP.settings.favoritedModels?.[backend])
-        ?.some(value => mpModelIdKey(value, decisions) === mpModelIdKey(id, decisions)) || false;
+        ?.some(value => mpModelIdKey(value) === mpModelIdKey(id)) || false;
 }
-function mpChangeModelPreference(key, backend, id, add) {
-    const decisions = backend === 'decisions';
-    const scope = decisions ? MP.settings.decisions : MP.settings;
-    const read = name => decisions ? scope[name] : scope[name][backend];
-    const write = (name, values) => { if (decisions) scope[name] = values; else scope[name][backend] = values; };
-    const matches = value => mpModelIdKey(value, decisions) === mpModelIdKey(id, decisions);
-    write(key, read(key).filter(value => !matches(value)));
+function mpEditedModelPreferences(scope, key, id, add) {
+    const keep = value => mpModelIdKey(value) !== mpModelIdKey(id);
+    const preferences = { ...scope, [key]: scope[key].filter(keep) };
     if (add) {
-        read(key).push(id);
+        preferences[key].push(id);
         const other = key === 'blockedModels' ? 'favoritedModels' : 'blockedModels';
-        write(other, read(other).filter(value => !matches(value)));
+        preferences[other] = scope[other].filter(keep);
     }
-    if (decisions && scope.blockedModels.some(value => mpModelIdKey(value, true) === mpModelIdKey(scope.model, true))) scope.model = '';
+    return preferences;
+}
+function mpSavePromptModelPreference(key, backend, id, add, beforeRefresh) {
+    return mpQueueSettingsWrite(async () => {
+        const { settings } = await mpRequest('ChangeMagicPromptModelPreference', {
+            provider: backend, model: id, preference: key, enabled: add
+        });
+        const saved = mpNormalizeSettings(settings);
+        MP.settings.blockedModels = saved.blockedModels;
+        MP.settings.favoritedModels = saved.favoritedModels;
+        beforeRefresh?.();
+        mpRefreshPromptModelControls();
+        if (!mpSettingsDraft) renderModelSettings();
+    });
+}
+function mpChangeModelPreference(key, backend, id, add, beforeRefresh) {
+    if (backend !== 'decisions') {
+        return mpSavePromptModelPreference(key, backend, id, add, beforeRefresh)
+            .catch(error => showError(`Could not save model preferences: ${error.message}`));
+    }
+    const scope = MP.settings.decisions;
+    const changes = mpEditedModelPreferences({ blockedModels: scope.blockedModels, favoritedModels: scope.favoritedModels }, key, id, add);
+    Object.assign(scope, changes);
+    if (scope.blockedModels.some(value => mpModelIdKey(value) === mpModelIdKey(scope.model))) scope.model = '';
     updateModelListOnLeft(true);
-    mpPersistSettings(decisions ? { decisions: { blockedModels: scope.blockedModels, favoritedModels: scope.favoritedModels } } : { blockedModels: MP.settings.blockedModels, favoritedModels: MP.settings.favoritedModels })
+    mpPersistSettings({ decisions: changes })
         .catch(error => showError(`Could not save model preferences: ${error.message}`));
 }
 Object.assign(MP, {
     isModelFavoritedForBackend,
-    blockModelId: (backend, id) => mpChangeModelPreference('blockedModels', backend, id, true),
+    blockModelId: (backend, id, beforeRefresh) => mpChangeModelPreference('blockedModels', backend, id, true, beforeRefresh),
     unblockModelId: (backend, id) => mpChangeModelPreference('blockedModels', backend, id, false),
-    favoriteModelId: (backend, id) => mpChangeModelPreference('favoritedModels', backend, id, true),
-    unfavoriteModelId: (backend, id) => mpChangeModelPreference('favoritedModels', backend, id, false)
+    favoriteModelId: (backend, id, beforeRefresh) => mpChangeModelPreference('favoritedModels', backend, id, true, beforeRefresh),
+    unfavoriteModelId: (backend, id, beforeRefresh) => mpChangeModelPreference('favoritedModels', backend, id, false, beforeRefresh)
 });
 
 function mpInstructionEntries(settings = mpCurrentSettings()) {
@@ -567,7 +651,7 @@ function initSettingsModal() {
         }).observe(document.getElementById(id));
     }
     modal.addEventListener('hide.bs.modal', event => { if (mpSettingsBusy) event.preventDefault(); });
-    modal.addEventListener('hidden.bs.modal', () => { mpSettingsDraft = null; });
+    modal.addEventListener('hidden.bs.modal', () => { mpSettingsDraft = mpPromptPreferencesAtOpen = null; });
     modal.addEventListener('hide.bs.modal', () => { mpCloseModelPickers(); mpCloseSwarmSettingsDropdown(); });
     modal.addEventListener('shown.bs.modal', () => {
         mpSettingsOpening = false;
@@ -673,17 +757,17 @@ function initSettingsModal() {
         select.addEventListener('change', () => {
             if (!mpSettingsDraft) return;
             const values = [...select.selectedOptions].map(option => option.value);
+            const selected = new Set(values.map(mpModelIdKey));
             const other = key === 'blockedModels' ? 'favoritedModels' : 'blockedModels';
             if (decisions) {
                 mpSettingsDraft.decisions[key] = values;
-                const selected = new Set(values.map(id => mpModelIdKey(id, true)));
-                mpSettingsDraft.decisions[other] = mpSettingsDraft.decisions[other].filter(id => !selected.has(mpModelIdKey(id, true)));
+                mpSettingsDraft.decisions[other] = mpSettingsDraft.decisions[other].filter(id => !selected.has(mpModelIdKey(id)));
                 renderDecisionModelSettings();
             }
             else {
                 const backend = mpSettingsDraft.backend;
                 mpSettingsDraft[key][backend] = values;
-                mpSettingsDraft[other][backend] = mpSettingsDraft[other][backend].filter(id => !values.includes(id));
+                mpSettingsDraft[other][backend] = mpSettingsDraft[other][backend].filter(id => !selected.has(mpModelIdKey(id)));
                 renderModelSettings();
             }
         });
@@ -740,7 +824,7 @@ function renderDecisionModelSettings() {
 
 function mpRenderModelPreferences(settings, modelId, favoritesId, blockedId) {
     mpFillModelSelect(document.getElementById(modelId), settings, settings.model);
-    const modelKey = id => mpModelIdKey(id, settings.catalogKey === 'openrouter-decisions');
+    const modelKey = mpModelIdKey;
     const blocked = new Set(settings.blockedModels[settings.backend].map(modelKey));
     for (const [id, key] of [[favoritesId, 'favoritedModels'], [blockedId, 'blockedModels']]) {
         const select = document.getElementById(id);
@@ -958,6 +1042,10 @@ async function showSettingsModal() {
     }
     catch (error) { showError(`Could not load MagicPrompt settings: ${error.message}`); return; }
     mpSettingsDraft = mpNormalizeSettings(MP.settings);
+    mpPromptPreferencesAtOpen = structuredClone({
+        blockedModels: mpSettingsDraft.blockedModels,
+        favoritedModels: mpSettingsDraft.favoritedModels
+    });
     mpEditingInstruction = 'prompt';
     document.getElementById('mpInstructionSearch').value = '';
     mpRenderProvider(); renderModelSettings(); renderDecisionModelSettings(); renderInstructionList(); mpRenderInstruction();
@@ -991,7 +1079,14 @@ async function saveSettings() {
         document.querySelector('#settingsModal .modal-body').inert = true;
         document.querySelector('#settingsModal .mp-settings-tabs').inert = true;
         mpSettingsStatus('Saving…');
-        const response = await mpPersistSettings(mpSettingsDraft);
+        const payload = { ...mpSettingsDraft };
+        for (const key of Object.keys(mpPromptPreferencesAtOpen)) {
+            const edited = MP_BACKENDS.filter(provider =>
+                JSON.stringify(mpSettingsDraft[key][provider]) !== JSON.stringify(mpPromptPreferencesAtOpen[key][provider]));
+            delete payload[key];
+            if (edited.length) payload[key] = Object.fromEntries(edited.map(provider => [provider, mpSettingsDraft[key][provider]]));
+        }
+        const response = await mpPersistSettings(payload);
         const preserveSelection = mpCatalogKey(MP.settings) === mpCatalogKey(mpSettingsDraft);
         MP.settings = mpNormalizeSettings(response.settings);
         window.mpRefreshInstructionPrefixes?.(); updateModelListOnLeft(preserveSelection);

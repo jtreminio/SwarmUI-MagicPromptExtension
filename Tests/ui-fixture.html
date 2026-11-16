@@ -1,6 +1,6 @@
 <!doctype html><html><head><meta charset="utf-8"><title>MagicPrompt UI test fixture</title><link rel="icon" href="data:,"><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="stylesheet" href="/swarm/css/bootstrap.min.css"><link rel="stylesheet" href="/swarm/css/site.css"><link rel="stylesheet" href="/swarm/css/genpage.css"><link rel="stylesheet" href="/swarm/css/themes/modern.css"><link rel="stylesheet" href="/swarm/css/themes/modern_dark.css">
-<link rel="stylesheet" href="/Assets/modeldropdown.css"><link rel="stylesheet" href="/Assets/settings.css"><link rel="stylesheet" href="/Assets/prompthistory.css">
+<link rel="stylesheet" href="/Assets/modeldropdown.css"><link rel="stylesheet" href="/Assets/settings.css"><link rel="stylesheet" href="/Assets/stats.css"><link rel="stylesheet" href="/Assets/prompthistory.css">
 <style>body {font-family:Arial,sans-serif;padding:24px;background:var(--background);color:var(--text)} .fixture-background {max-width:900px;margin:auto;opacity:.7} textarea{width:100%}</style>
 <script src="/swarm/js/lib/jquery.min.js"></script><script src="/swarm/js/lib/bootstrap.min.js"></script>
 <script>
@@ -32,23 +32,78 @@ window.testSettings={backend:'openrouter',model:'google/model-a',backends:{openr
 window.testModels=[{model:'google/model-a',name:'Google: Fast model',costOut:'$1.5'},{model:'local/model-b',name:'Local model',costOut:'$0.3'},{model:'old/model',name:'Older model',costOut:'$2'},...Array.from({length:100},(_,i)=>({model:'provider/model-'+i,name:'Provider: Model '+i,costOut:'$0.5'}))];
 window.testDecisionModels=[{model:'typesafe/old',name:'TypeSafe: Older decision',created:1,decisionModel:true,costIn:'$0.1',costOut:'$0',costRequest:'$0'}, {model:'typesafe/new',name:'TypeSafe: New decision',created:20,decisionModel:true,costIn:'$0.2',costOut:'$0',costRequest:'$0'}, {model:'parallel/decision',name:'Parallel: Decision',created:30,decisionModel:true,costIn:'$0',costOut:'$0',costRequest:'$0.001'}];
 window.testWrites=[];
-window.genericRequest=(route,payload,done,depth,fail)=>setTimeout(()=>{
- if(route==='GetMagicPromptSettings')return done({success:true,settings:structuredClone(testSettings)});
+window.testPreferenceWrites=[];
+window.testStats=[];
+window.testStatsCatalogs={};
+window.testStatsGates={};
+window.testStatsFailures={catalogs:{}};
+window.testStatsReads=0;
+window.testSettingsReads=0;
+if(location.hash==='#stats-delayed-settings'){
+ testStatsGates.settings=new Promise(resolve=>{window.releaseSettings=resolve});
+}
+window.genericRequest=(route,payload,done,depth,fail)=>{
+ if(route==='GetMagicPromptSettings'){
+  const settings=structuredClone(testSettings);
+  testSettingsReads++;
+  return Promise.resolve(testStatsGates.settings).then(()=>{
+   testSettingsReads--;
+   return done({success:true,settings});
+  });
+ }
+ if(route==='GetMagicPromptStats'){
+  const models=structuredClone(testStats);
+  testStatsReads++;
+  return Promise.resolve(testStatsGates.read).then(()=>{
+   testStatsReads--;
+   return testStatsFailures.read ? fail(testStatsFailures.read) : done({success:true,models});
+  });
+ }
+ const backend=payload.backend || testSettings.backend;
+ if(route==='GetMagicPromptModels')return Promise.resolve(testStatsGates[backend]).then(()=>{
+  if(testStatsFailures.catalogs[backend])return fail(testStatsFailures.catalogs[backend]);
+  return done({success:true,models:structuredClone(testStatsCatalogs[backend] || testModels)});
+ });
+ return setTimeout(async ()=>{
  if(route==='GetMagicPromptDecisionModels')return done({success:true,models:structuredClone(testDecisionModels)});
- if(route==='GetMagicPromptModels')return done({success:true,models:structuredClone(testModels)});
- if(route==='GetMagicPromptDecisionHistory')return done({success:true,series:[],selected:'',models:[],rows:[],total:0,page_size:25,...structuredClone(window.testDecisionHistory)});
+ if(route==='ResetMagicPromptStats'){
+  if(testStatsFailures.reset)return fail(testStatsFailures.reset);
+  const row=testStats.find(row=>row.provider===payload.provider && row.model===payload.model);
+  Object.assign(row,{completed:0,errors:0,latency_ms:null,skipped:0,skip_completed:0,recent_skipped:0,recent_skip_completed:0});
+  return done({success:true,models:structuredClone(testStats)});
+ }
  if(route==='SaveMagicPromptSettings'){
+  await testStatsGates.preference;
   if(window.failSave)return fail('Simulated save failure');
   testWrites.push(structuredClone(payload));
   const incoming=structuredClone(payload.settings);
   if(incoming.decisions)incoming.decisions={...testSettings.decisions,...incoming.decisions};
+  for(const key of ['blockedModels','favoritedModels']){
+   if(incoming[key])incoming[key]={...testSettings[key],...incoming[key]};
+  }
   testSettings={...testSettings,...incoming};
   if(testSettings.decisions?.blockedModels?.includes(testSettings.decisions.model))testSettings.decisions.model='';
   for(const [id,value]of Object.entries(testSettings.instructions.custom))if(value.deleted)delete testSettings.instructions.custom[id];
   return done({success:true,settings:structuredClone(testSettings)});
  }
+ if(route==='ChangeMagicPromptModelPreference'){
+  await testStatsGates.preference;
+  if(window.failSave)return fail('Simulated save failure');
+  testPreferenceWrites.push(structuredClone(payload));
+  const {provider,model,preference,enabled}=payload;
+  const key=preference;
+  const other=key==='blockedModels'?'favoritedModels':'blockedModels';
+  const keep=id=>id.toLowerCase()!==model.toLowerCase();
+  testSettings[key][provider]=testSettings[key][provider].filter(keep);
+  if(enabled){
+   testSettings[key][provider].push(model);
+   testSettings[other][provider]=testSettings[other][provider].filter(keep);
+  }
+  return done({success:true,settings:structuredClone(testSettings)});
+ }
  if(route==='MagicPromptPhoneHome')return done({success:true,response:'You create cinematic prompts with precise composition.'});
-},20);
+ },20);
+};
 </script>
-<script src="/swarm/js/genpage/helpers/ui_improvements.js"></script><script src="/Assets/magicprompt.js"></script><script src="/Assets/settings.js"></script><script src="/Assets/modeldropdown.js"></script><script src="/Assets/prompthistory.js"></script><script src="/Assets/decisionhistory.js"></script>
+<script src="/swarm/js/genpage/helpers/ui_improvements.js"></script><script src="/Assets/magicprompt.js"></script><script src="/Assets/settings.js"></script><script src="/Assets/modeldropdown.js"></script><script src="/Assets/prompthistory.js"></script><script src="/Assets/stats.js"></script>
 </head><body><main id="main_inputs_area" class="fixture-background"><h2>Generate</h2><div id="input_group_content_magicpromptautoenable"></div><textarea id="alt_prompt_textbox" rows="5">Current prompt</textarea><textarea id="input_prompt" hidden></textarea><select id="input_mpmodelid"><option value="google/model-a">Google: Fast model</option></select><select id="input_mpinstructions"><option value="custom-2">Illustration 3</option></select><select id="input_mpdecisionmodelid"><option value="">Settings default</option></select><select id="input_mpdecisionquestion"></select></main></body></html>

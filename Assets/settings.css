@@ -12,14 +12,6 @@
 .mp-settings .mp-settings-tabs button { padding: .85rem .1rem; background: transparent; border: 0; border-bottom: 3px solid transparent; color: var(--text); }
 .mp-settings .mp-settings-tabs button[aria-selected="true"] { color: var(--emphasis); border-bottom-color: var(--emphasis); }
 .mp-settings .mp-decision-question { min-width: 0; }
-.mp-settings .mp-decision-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr)); gap: .75rem; }
-.mp-settings .mp-decision-table { overflow-x: auto; margin: .7rem 0 1.5rem; }
-.mp-settings .mp-decision-table table { width: 100%; font-size: .9rem; }
-.mp-settings .mp-decision-table th, .mp-settings .mp-decision-table td { padding: .55rem .7rem; border-bottom: 1px solid var(--border-color); vertical-align: top; }
-.mp-settings .mp-decision-table th { background: var(--background-gray, var(--background)); white-space: nowrap; }
-.mp-settings .mp-decision-table td { overflow-wrap: anywhere; }
-.mp-settings .mp-decision-pages { align-items: center; justify-content: flex-end; }
-.mp-settings .mp-decision-pages button[aria-disabled="true"] { opacity: .5; cursor: default; }
 .mp-settings h6 { font-size: 1rem; font-weight: 600; margin: 0; }
 .mp-settings .mp-field { display: flex; flex-direction: column; gap: .45rem; font-size: .9rem; margin-bottom: 1.1rem; width: 100%; }
 .mp-settings .form-control, .mp-settings .form-select { background-color: var(--background); border: 1px solid var(--border-color); color: var(--text); border-radius: 5px; padding: .55rem .7rem; width: 100%; }

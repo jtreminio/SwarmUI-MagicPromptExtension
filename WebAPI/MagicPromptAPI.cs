@@ -10,7 +10,6 @@ using Microsoft.AspNetCore.Html;
 using System.Net;
 using System.Text.RegularExpressions;
 using System.Linq;
-using System.Globalization;
 
 namespace Hartsy.Extensions.MagicPromptExtension.WebAPI;
 
@@ -22,7 +21,8 @@ public static class MagicPromptPermissions
     public static readonly PermInfo PermReadConfig = Permissions.Register(new("magicprompt_read_config", "Read Configuration", "Allows the user to read configuration settings.", PermissionDefault.POWERUSERS, MagicPromptPermGroup));
     public static readonly PermInfo PermGetModels = Permissions.Register(new("magicprompt_get_models", "Get Models", "Allows the user to retrieve the list of available models.", PermissionDefault.POWERUSERS, MagicPromptPermGroup));
     public static readonly PermInfo PermResetConfig = Permissions.Register(new("magicprompt_reset_config", "Reset Configuration", "Allows the user to reset configuration settings.", PermissionDefault.POWERUSERS, MagicPromptPermGroup));
-    public static readonly PermInfo PermReadDecisionHistory = Permissions.Register(new("magicprompt_read_decision_history", "Read Decision History", "Allows the user to view shared model decision results.", PermissionDefault.POWERUSERS, MagicPromptPermGroup));
+    public static readonly PermInfo PermReadStats = Permissions.Register(new("magicprompt_read_stats", "Read Stats", "Allows the user to view shared MagicPrompt model stats.", PermissionDefault.POWERUSERS, MagicPromptPermGroup));
+    public static readonly PermInfo PermResetStats = Permissions.Register(new("magicprompt_reset_stats", "Reset Stats", "Allows the user to reset shared stats for a MagicPrompt model.", PermissionDefault.ADMINS, MagicPromptPermGroup));
 }
 
 [API.APIClass("API routes related to MagicPromptExtension extension")]
@@ -34,10 +34,12 @@ public class MagicPromptAPI
         API.RegisterAPICall(LLMAPICalls.MagicPromptPhoneHome, true, MagicPromptPermissions.PermPhoneHome);
         API.RegisterAPICall(SessionSettings.GetMagicPromptSettings, false, MagicPromptPermissions.PermReadConfig);
         API.RegisterAPICall(SessionSettings.SaveMagicPromptSettings, false, MagicPromptPermissions.PermSaveConfig);
+        API.RegisterAPICall(SessionSettings.ChangeMagicPromptModelPreference, false, MagicPromptPermissions.PermSaveConfig);
         API.RegisterAPICall(SessionSettings.ResetMagicPromptSettings, false, MagicPromptPermissions.PermResetConfig);
         API.RegisterAPICall(LLMAPICalls.GetMagicPromptModels, true, MagicPromptPermissions.PermGetModels);
         API.RegisterAPICall(OpenRouterDecisions.GetMagicPromptDecisionModels, true, MagicPromptPermissions.PermGetModels);
-        API.RegisterAPICall(GetMagicPromptDecisionHistory, false, MagicPromptPermissions.PermReadDecisionHistory);
+        API.RegisterAPICall(GetMagicPromptStats, false, MagicPromptPermissions.PermReadStats);
+        API.RegisterAPICall(ResetMagicPromptStats, false, MagicPromptPermissions.PermResetStats);
         // All key types must be added to the accepted list first
         string[] keyTypes = ["openrouter_api", "openaiapi_local"];
         foreach (string keyType in keyTypes)
@@ -51,12 +53,26 @@ public class MagicPromptAPI
             new HtmlString("For connecting to local servers that implement the OpenAI API schema (like LM Studio, text-generation-webui, or LocalAI). You may need to provide API keys or connection details depending on your local setup."));
     }
 
-    public static Task<JObject> GetMagicPromptDecisionHistory(string endDate, int days, string seriesId, int offset)
+    public static Task<JObject> GetMagicPromptStats() => StatsResponse(ModelStats.Read);
+
+    public static Task<JObject> ResetMagicPromptStats(string provider, string model)
     {
-        if (!DateOnly.TryParseExact(endDate, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateOnly end)
-            || days is not (7 or 30 or 90) || offset < 0 || seriesId?.Length > 64)
-            return Task.FromResult(CreateErrorResponse("Choose a valid decision history date range."));
-        return Task.FromResult(DecisionHistory.Read(end, days, seriesId, offset));
+        if (provider is not ("openrouter" or "openaiapi") || string.IsNullOrWhiteSpace(model))
+            return Task.FromResult(CreateErrorResponse("Choose a valid MagicPrompt provider and model."));
+        return StatsResponse(() => ModelStats.Reset(provider, model));
+    }
+
+    private static Task<JObject> StatsResponse(Func<JArray> operation)
+    {
+        try
+        {
+            return Task.FromResult(new JObject { ["success"] = true, ["models"] = operation() });
+        }
+        catch (Exception ex)
+        {
+            Logs.Warning($"MagicPrompt: could not access model stats: {ex.Message}");
+            return Task.FromResult(CreateErrorResponse("Could not access MagicPrompt stats. See SwarmUI logs."));
+        }
     }
 
     /// <summary>Safely registers an API key if it's not already registered</summary>

@@ -96,8 +96,8 @@ function addSidebarSettingsLink() {
         }
         group.append(createDiv(linkId, 'keep_group_visible',
             `<button type="button" class="basic-button" onclick="showSettingsModal()">MagicPrompt Settings</button>`));
-        group.append(createDiv('magicprompt_decision_history_link', 'keep_group_visible',
-            `<button type="button" class="basic-button" onclick="mpShowDecisionHistory(this)">Decision History</button>`));
+        group.append(createDiv('magicprompt_stats_link', 'keep_group_visible',
+            `<button type="button" class="basic-button" onclick="mpShowStats(this)">Stats</button>`));
     };
     if (typeof postParamBuildSteps !== 'undefined') {
         postParamBuildSteps.push(build);
@@ -188,7 +188,7 @@ if (typeof getFormattedMetadataEntries === 'function') {
         const formatted = originalGetFormattedMetadataEntries(metadata);
         const entries = formatted.entries;
         const decisionsIndex = entries.findIndex(entry => entry.id === 'mp_decisions');
-        if (decisionsIndex >= 0 && typeof mpDecisionAnswer === 'function') {
+        if (decisionsIndex >= 0) {
             try {
                 const records = JSON.parse(entries[decisionsIndex].compareValue);
                 const summaries = records.map(record => {
@@ -240,6 +240,19 @@ if (typeof getFormattedMetadataEntries === 'function') {
         entries.splice(insertIndex, 0, promptEntry);
         return formatted;
     };
+}
+
+function mpDecisionAnswer(record) {
+    if (record.status !== 'ok') return record.message || `Error: ${record.error || 'Decision unavailable'}`;
+    const skipped = record.generation_skipped === true ? ' · Generation skipped' : '';
+    if (typeof record.answer === 'boolean') {
+        const yes = Array.isArray(record.probabilities) ? record.probabilities[1] : record.probabilities?.true;
+        return `${record.answer ? 'Yes' : 'No'}${Number.isFinite(yes) ? ` (${Math.round(yes * 100)}% probability of Yes)` : ''}${skipped}`;
+    }
+    if (record.decision?.type === 'score' && typeof record.answer === 'number') {
+        return `${record.answer.toFixed(2)} / ${(record.decision.options?.length || 1) - 1}`;
+    }
+    return String(record.answer ?? 'Unavailable') + skipped;
 }
 
 /**

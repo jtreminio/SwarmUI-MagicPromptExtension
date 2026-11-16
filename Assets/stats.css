@@ -1,0 +1,45 @@
+.mp-settings.mp-stats .modal-body { min-height: 0; padding-top: .85rem; }
+.mp-stats .mp-stats-tools { display: flex; align-items: center; justify-content: flex-end; gap: .65rem; margin-bottom: .8rem; font-size: .86rem; }
+.mp-stats .mp-stats-tools .form-select { width: min(100%, 15rem); min-width: 0; padding: .35rem 1.8rem .35rem .55rem; font-size: .86rem; }
+.mp-stats .mp-stats-status { margin: 0; overflow-wrap: anywhere; }
+.mp-stats .mp-stats-status:empty { position: absolute; width: 1px; height: 1px; overflow: hidden; }
+.mp-stats :is(.mp-status-error, .mp-danger) { color: var(--text); font-weight: 600; }
+.mp-stats table { width: 100%; font-size: .875rem; }
+.mp-stats th, .mp-stats td { padding: .65rem .55rem; border-bottom: 1px solid var(--border-color); vertical-align: middle; }
+.mp-stats thead { background: var(--background-gray, var(--background)); }
+.mp-stats thead th { white-space: nowrap; text-align: left; font-size: .8rem; }
+.mp-stats tbody tr:last-child > * { border-bottom: 0; }
+.mp-stats th[scope="row"] { width: 100%; text-align: left; overflow-wrap: anywhere; }
+.mp-stats .mp-stats-group-heading th { padding: .4rem .55rem; background: var(--background-gray, var(--background)); text-align: left; font-size: .8rem; }
+.mp-stats .mp-stats-model { font-weight: 600; }
+.mp-stats .mp-stats-provider { margin-top: .125rem; color: var(--text-soft, var(--text)); font-weight: 400; font-size: .8rem; }
+.mp-stats .mp-stats-actions { display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .4rem; }
+.mp-stats .mp-stats-actions .basic-button { min-height: 28px; padding: .13rem .45rem; font-size: .78rem; }
+.mp-stats [aria-disabled="true"] { opacity: .6; cursor: default; }
+.mp-stats .mp-stats-confirm { margin-top: .45rem; padding: .4rem .5rem; background: var(--background-gray); border-inline-start: 2px solid var(--border-color); font-size: .82rem; font-weight: 400; overflow-wrap: anywhere; }
+.mp-stats .mp-stats-value { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.mp-stats td:first-of-type, .mp-stats td:last-of-type, .mp-stats thead th:last-child { text-align: right; }
+.mp-stats .mp-stats-skip { display: grid; gap: .2rem; }
+.mp-stats .mp-stats-rate { display: grid; grid-template-columns: 5rem max-content; gap: .45rem; align-items: center; }
+.mp-stats .mp-stats-skip .mp-stats-rate { grid-template-columns: 3.9rem 5rem 3.6rem; }
+.mp-stats .mp-stats-period { grid-column: 1; color: var(--text-soft, var(--text)); font-size: .77rem; white-space: nowrap; }
+.mp-stats .mp-stats-track { grid-column: 1; height: .36rem; width: 100%; background: color-mix(in srgb, var(--text) 23%, var(--background)); border-radius: 1rem; overflow: hidden; }
+.mp-stats .mp-stats-skip .mp-stats-track { grid-column: 2; }
+.mp-stats .mp-stats-rate .mp-stats-value { grid-column: 2; grid-row: 1; text-align: left; }
+.mp-stats .mp-stats-skip .mp-stats-value { grid-column: 3; text-align: right; }
+.mp-stats .mp-stats-fill { display: block; height: 100%; background: var(--text); }
+.mp-stats .mp-stats-caption { display: none; }
+
+@media (max-width: 800px) {
+    .mp-settings.mp-stats .modal-body, .mp-settings.mp-stats .modal-header, .mp-settings.mp-stats .modal-footer { padding-inline: .8rem; }
+    .mp-stats .mp-stats-status:not(:empty) { flex-basis: 100%; }
+    .mp-stats table, .mp-stats tbody { display: block; }
+    .mp-stats thead { position: absolute; clip-path: inset(50%); width: 1px; height: 1px; overflow: hidden; }
+    .mp-stats tbody tr { display: grid; border-top: 1px solid var(--border-color); padding: .48rem 0; }
+    .mp-stats tbody tr > * { width: auto; padding: .23rem 0; border: 0; min-width: 0; }
+    .mp-stats td { display: flex; justify-content: space-between; align-items: start; gap: .3rem; }
+    .mp-stats .mp-stats-caption { display: block; font-size: .8rem; font-weight: 500; }
+    .mp-stats .mp-stats-rate { grid-template-columns: clamp(2rem, 17vw, 5rem) max-content; gap: .28rem; }
+    .mp-stats .mp-stats-skip .mp-stats-rate { grid-template-columns: 3.55rem clamp(2rem, 17vw, 5rem) 3.2rem; }
+    .mp-stats .mp-stats-actions .basic-button { min-height: 32px; }
+}

@@ -10,6 +10,7 @@ public class SessionSettings : MagicPromptAPI
 {
     private const string SETTINGS_KEY = "magicprompt";
     private const string SETTINGS_SUBKEY = "config";
+    private static readonly object SettingsMutationLock = new();
 
     /// <summary>Supported provider keys aligned with the settings UI and <see cref="DefaultBackendConfig"/>.</summary>
     private static readonly string[] BlockedModelBackendKeys =
@@ -214,7 +215,9 @@ public class SessionSettings : MagicPromptAPI
         }
     }
 
-    public static async Task<JObject> GetMagicPromptSettings()
+    public static Task<JObject> GetMagicPromptSettings() => Task.FromResult(ReadMagicPromptSettings());
+
+    private static JObject ReadMagicPromptSettings()
     {
         try
         {
@@ -268,7 +271,14 @@ public class SessionSettings : MagicPromptAPI
         }
     }
 
-    public static async Task<JObject> SaveMagicPromptSettings(JObject settings)
+    private static Task<JObject> MutateSettings(Func<JObject> mutation)
+    {
+        lock (SettingsMutationLock) return Task.FromResult(mutation());
+    }
+
+    public static Task<JObject> SaveMagicPromptSettings(JObject settings) => MutateSettings(() => SaveSettings(settings));
+
+    private static JObject SaveSettings(JObject settings)
     {
         try
         {
@@ -281,7 +291,8 @@ public class SessionSettings : MagicPromptAPI
                 };
             }
             // Get existing settings
-            JObject existingSettings = await GetMagicPromptSettings();
+            JObject existingSettings = ReadMagicPromptSettings();
+            if ((bool?)existingSettings["success"] != true) return existingSettings;
             JObject newSettings = [];
             // Helper function to merge objects recursively
             static void MergeSettings(JObject target, JObject source, string parentKey = null)
@@ -425,8 +436,52 @@ public class SessionSettings : MagicPromptAPI
         }
     }
 
+    public static Task<JObject> ChangeMagicPromptModelPreference(string provider, string model, string preference, bool enabled)
+    {
+        if (!BlockedModelBackendKeys.Contains(provider) || string.IsNullOrWhiteSpace(model)
+            || preference is not ("blockedModels" or "favoritedModels"))
+            return Task.FromResult(CreateErrorResponse("Choose a valid MagicPrompt provider, model, and preference."));
+        return MutateSettings(() =>
+        {
+            try
+            {
+                JObject response = ReadMagicPromptSettings();
+                if ((bool?)response["success"] != true) return response;
+                JObject settings = (JObject)response["settings"];
+                string id = model.Trim();
+                string key = id.ToLowerInvariant();
+                bool Matches(JToken value) => value.ToString().ToLowerInvariant() == key;
+                JArray selected = (JArray)settings[preference][provider];
+                JToken current = selected.FirstOrDefault(Matches);
+                if (enabled)
+                {
+                    if (current == null) selected.Add(id);
+                    string other = preference == "blockedModels" ? "favoritedModels" : "blockedModels";
+                    settings[other][provider].FirstOrDefault(Matches)?.Remove();
+                }
+                else
+                {
+                    current?.Remove();
+                }
+                var user = Program.Sessions.GenericSharedUser;
+                if (Program.NoPersist || !user.MayCreateSessions)
+                    return CreateErrorResponse("MagicPrompt settings cannot be saved.");
+                user.SaveGenericData(SETTINGS_KEY, SETTINGS_SUBKEY, settings.ToString());
+                ModelListProvider.InvalidateCache();
+                return response;
+            }
+            catch (Exception ex)
+            {
+                Logs.Error($"Failed to change a MagicPrompt model preference: {ex.Message}");
+                return CreateErrorResponse("Could not save the MagicPrompt model preference.");
+            }
+        });
+    }
+
     /// <summary>You screw something up? Resets user settings to defaults.</summary>
-    public static async Task<JObject> ResetMagicPromptSettings()
+    public static Task<JObject> ResetMagicPromptSettings() => MutateSettings(ResetSettings);
+
+    private static JObject ResetSettings()
     {
         try
         {

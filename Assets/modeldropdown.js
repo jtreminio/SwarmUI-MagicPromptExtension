@@ -20,6 +20,8 @@ function mpInstallModelDropdown(SELECT_ID, TRIGGER_ID, POPOVER_ID, decisions = f
 
   /** @type {HTMLDivElement|null} */
   let openPopover = null;
+  let originatingPopover = null;
+  let refreshPopoverRows = null;
   let attachedSelect = null;
   let labelObserver = null;
   let changeListener = null;
@@ -63,7 +65,14 @@ function mpInstallModelDropdown(SELECT_ID, TRIGGER_ID, POPOVER_ID, decisions = f
     changeListener = () => syncTriggerLabel(select, trigger);
     select.addEventListener('change', changeListener);
 
-    labelObserver = new MutationObserver(() => syncTriggerLabel(select, trigger));
+    labelObserver = new MutationObserver(() => {
+      if (!decisions && openPopover) {
+        if (openPopover === originatingPopover) refreshPopoverRows();
+        else closePopover(openPopover.contains(document.activeElement));
+      }
+      originatingPopover = null;
+      syncTriggerLabel(select, trigger);
+    });
     labelObserver.observe(select, { childList: true });
 
     trigger.addEventListener('click', (e) => {
@@ -94,6 +103,7 @@ function mpInstallModelDropdown(SELECT_ID, TRIGGER_ID, POPOVER_ID, decisions = f
     }
     openPopover.remove();
     openPopover = null;
+    refreshPopoverRows = null;
     document.removeEventListener('mousedown', onDocMouseDown, true);
     document.removeEventListener('keydown', onDocKeyDown, true);
     let trigger = document.getElementById(TRIGGER_ID);
@@ -101,6 +111,11 @@ function mpInstallModelDropdown(SELECT_ID, TRIGGER_ID, POPOVER_ID, decisions = f
       trigger.setAttribute('aria-expanded', 'false');
       if (focus) trigger.focus();
     }
+  }
+
+  function markPreferenceOrigin() {
+    const source = openPopover;
+    return () => { originatingPopover = source; };
   }
 
   function onDocMouseDown(e) {
@@ -142,11 +157,10 @@ function mpInstallModelDropdown(SELECT_ID, TRIGGER_ID, POPOVER_ID, decisions = f
 
     let rows = [];
     let lastFavoritedRow = null;
-    const modelKey = id => decisions ? id.toLowerCase() : id;
-    let blocked = new Set(((decisions ? window.MP?.settings?.decisions?.blockedModels : window.MP?.settings?.blockedModels?.[backendKey]) || []).map(modelKey));
+    let blocked = new Set(((decisions ? window.MP?.settings?.decisions?.blockedModels : window.MP?.settings?.blockedModels?.[backendKey]) || []).map(mpModelIdKey));
     for (let i = 0; i < select.options.length; i++) {
       let opt = select.options[i];
-      if ((!opt.value && !decisions) || blocked.has(modelKey(opt.value)) || opt.dataset.blocked === '1' || (decisions && opt.dataset.unavailable === '1')) {
+      if ((!opt.value && !decisions) || blocked.has(mpModelIdKey(opt.value)) || opt.dataset.blocked === '1' || (decisions && opt.dataset.unavailable === '1')) {
         continue;
       }
       let row = buildRow(opt, select, trigger, backendKey);
@@ -162,17 +176,11 @@ function mpInstallModelDropdown(SELECT_ID, TRIGGER_ID, POPOVER_ID, decisions = f
       lastFavoritedRow.after(divider);
     }
 
-    if (rows.length === 0) {
-      let empty = document.createElement('div');
-      empty.className = 'mp-model-dropdown-empty-msg';
-      empty.textContent = 'No models available. Configure a backend in Settings.';
-      listArea.appendChild(empty);
-    }
-
     function applyFilter() {
       let q = search.value.trim().toLowerCase();
       let anyVisible = false;
-      for (let r of rows) {
+      const available = rows.filter(row => row.el.isConnected);
+      for (let r of available) {
         let visible = !q || r.text.includes(q) || r.value.includes(q);
         r.el.style.display = visible ? '' : 'none';
         if (visible) {
@@ -180,13 +188,14 @@ function mpInstallModelDropdown(SELECT_ID, TRIGGER_ID, POPOVER_ID, decisions = f
         }
       }
       let noMatches = listArea.querySelector('.mp-model-dropdown-no-matches');
-      if (rows.length > 0 && !anyVisible) {
+      if (!anyVisible) {
         if (!noMatches) {
           noMatches = document.createElement('div');
           noMatches.className = 'mp-model-dropdown-no-matches';
-          noMatches.textContent = 'No matches';
           listArea.appendChild(noMatches);
         }
+        noMatches.classList.toggle('mp-model-dropdown-empty-msg', available.length === 0);
+        noMatches.textContent = available.length ? 'No matches' : 'No models available. Configure a backend in Settings.';
       } else if (noMatches) {
         noMatches.remove();
       }
@@ -209,10 +218,25 @@ function mpInstallModelDropdown(SELECT_ID, TRIGGER_ID, POPOVER_ID, decisions = f
     });
 
     document.body.appendChild(popover);
-    positionPopover(popover, trigger);
     openPopover = popover;
+    refreshPopoverRows = () => {
+      const options = new Map([...select.options].map(option => [option.value, option]));
+      for (const row of rows) {
+        if (!row.el.isConnected) continue;
+        const option = options.get(row.model);
+        if (!option || option.dataset.blocked === '1') {
+          if (row.el.contains(document.activeElement)) search.focus();
+          row.el.remove();
+        } else {
+          row.setFavorited(option.dataset.favorited === '1');
+        }
+      }
+      applyFilter();
+    };
     trigger.setAttribute('aria-expanded', 'true');
 
+    applyFilter();
+    positionPopover(popover, trigger);
     scrollSelectedIntoView(listArea);
 
     setTimeout(() => search.focus(), 0);
@@ -289,10 +313,6 @@ function mpInstallModelDropdown(SELECT_ID, TRIGGER_ID, POPOVER_ID, decisions = f
     let isFavorited = (window.MP && typeof window.MP.isModelFavoritedForBackend === 'function')
       ? window.MP.isModelFavoritedForBackend(backendKey, opt.value)
       : !!(opt.dataset && opt.dataset.favorited === '1');
-    if (isFavorited) {
-      row.classList.add('mp-model-dropdown-row-favorited');
-    }
-
     let label = document.createElement('button');
     label.type = 'button';
     label.className = 'mp-model-dropdown-row-label';
@@ -302,12 +322,14 @@ function mpInstallModelDropdown(SELECT_ID, TRIGGER_ID, POPOVER_ID, decisions = f
     let starBtn = document.createElement('button');
     starBtn.type = 'button';
     starBtn.className = 'mp-model-dropdown-star';
-    starBtn.textContent = isFavorited ? '★' : '☆';
-    starBtn.title = isFavorited ? 'Remove from favorites' : 'Add to favorites';
-    starBtn.setAttribute('aria-label', starBtn.title + ': ' + opt.text);
-    if (isFavorited) {
-      starBtn.classList.add('mp-model-dropdown-star-active');
+    function setFavorited(favorited) {
+      starBtn.textContent = favorited ? '★' : '☆';
+      starBtn.title = favorited ? 'Remove from favorites' : 'Add to favorites';
+      starBtn.setAttribute('aria-label', starBtn.title + ': ' + opt.text);
+      starBtn.classList.toggle('mp-model-dropdown-star-active', favorited);
+      row.classList.toggle('mp-model-dropdown-row-favorited', favorited);
     }
+    setFavorited(isFavorited);
     row.appendChild(starBtn);
 
     let removeBtn = document.createElement('button');
@@ -337,28 +359,13 @@ function mpInstallModelDropdown(SELECT_ID, TRIGGER_ID, POPOVER_ID, decisions = f
       if (!MP) {
         return;
       }
-      if (starBtn.classList.contains('mp-model-dropdown-star-active')) {
-        if (typeof MP.unfavoriteModelId === 'function') {
-          MP.unfavoriteModelId(backendKey, id);
-        }
-        starBtn.classList.remove('mp-model-dropdown-star-active');
-        starBtn.textContent = '☆';
-        starBtn.title = 'Add to favorites';
-        row.classList.remove('mp-model-dropdown-row-favorited');
-        if (opt.dataset) {
-          delete opt.dataset.favorited;
-        }
-      } else {
-        if (typeof MP.favoriteModelId === 'function') {
-          MP.favoriteModelId(backendKey, id);
-        }
-        starBtn.classList.add('mp-model-dropdown-star-active');
-        starBtn.textContent = '★';
-        starBtn.title = 'Remove from favorites';
-        row.classList.add('mp-model-dropdown-row-favorited');
-        if (opt.dataset) {
-          opt.dataset.favorited = '1';
-        }
+      const favorite = !starBtn.classList.contains('mp-model-dropdown-star-active');
+      const action = favorite ? MP.favoriteModelId : MP.unfavoriteModelId;
+      action?.(backendKey, id, decisions ? undefined : markPreferenceOrigin());
+      if (decisions) {
+        setFavorited(favorite);
+        if (favorite) opt.dataset.favorited = '1';
+        else delete opt.dataset.favorited;
       }
       // Reordering happens on the next dropdown open (after persist + select
       // rebuild). Keeping the row in place avoids surprising layout jumps
@@ -370,9 +377,8 @@ function mpInstallModelDropdown(SELECT_ID, TRIGGER_ID, POPOVER_ID, decisions = f
       e.stopPropagation();
       let id = opt.value;
 
-      if (window.MP && typeof window.MP.blockModelId === 'function') {
-        window.MP.blockModelId(backendKey, id);
-      }
+      window.MP?.blockModelId?.(backendKey, id, decisions ? undefined : markPreferenceOrigin());
+      if (!decisions) return;
 
       // Removing the selected native option silently selects another model.
       // Retain it for SwarmUI's parameter value, but hide it from this menu.
@@ -392,6 +398,11 @@ function mpInstallModelDropdown(SELECT_ID, TRIGGER_ID, POPOVER_ID, decisions = f
       ) {
         return;
       }
+      const live = [...select.options].find(option => option.value === opt.value);
+      if (!live || live.dataset.blocked === '1') {
+        closePopover(true);
+        return;
+      }
       select.value = opt.value;
       if (typeof triggerChangeFor === 'function') {
         triggerChangeFor(select);
@@ -402,6 +413,8 @@ function mpInstallModelDropdown(SELECT_ID, TRIGGER_ID, POPOVER_ID, decisions = f
 
     return {
       el: row,
+      model: opt.value,
+      setFavorited,
       text: (opt.text || '').toLowerCase(),
       value: (opt.value || '').toLowerCase(),
       favorited: isFavorited,

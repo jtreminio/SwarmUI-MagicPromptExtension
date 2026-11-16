@@ -12,7 +12,7 @@ test('Swarm image metadata displays decisions, errors and skipped checks', () =>
         getParamById() {}, hashCode() { return 0; }, escapeHtml: escape, escapeHtmlNoBr: escape
     });
     context.window = context;
-    for (const source of ['../../../wwwroot/js/genpage/helpers/metadatahelpers.js', '../Assets/magicprompt.js', '../Assets/decisionhistory.js']) {
+    for (const source of ['../../../wwwroot/js/genpage/helpers/metadatahelpers.js', '../Assets/magicprompt.js']) {
         vm.runInContext(fs.readFileSync(path.join(__dirname, source), 'utf8'), context);
     }
 

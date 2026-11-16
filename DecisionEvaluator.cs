@@ -103,11 +103,22 @@ internal static class DecisionEvaluator
     private static string SkipValue(JObject question) => (string)question["type"] is "noul" or "choice"
         && question["skipIf"]?.Type == JTokenType.String ? ((string)question["skipIf"]).Trim() : "";
 
+    private static string MatchableSkipValue(JObject question)
+    {
+        string rule = SkipValue(question);
+        if (rule.Length == 0) return "";
+        bool matchable = (string)question["type"] == "noul"
+            ? rule.Equals("yes", StringComparison.OrdinalIgnoreCase) || rule.Equals("no", StringComparison.OrdinalIgnoreCase)
+            : question["options"] is JArray options && options.Values<string>().Contains(rule, StringComparer.Ordinal);
+        return matchable ? rule : "";
+    }
+
     private static bool IsRemoteEndpoint(string endpoint) =>
         Uri.TryCreate(endpoint, UriKind.Absolute, out Uri uri) && !uri.IsLoopback;
 
     internal sealed record Selection(string Evaluator, JObject[] Questions)
     {
+        internal int SkipQuestionCount { get; } = Questions.Count(question => MatchableSkipValue(question).Length > 0);
         internal bool RequiresFreshResponse { get; } = Questions.Any(question => SkipValue(question).Length > 0);
     }
 
@@ -147,16 +158,8 @@ internal static class DecisionEvaluator
         {
             List<JObject> records = [];
             JObject match = EvaluateAsync(fetched, selection, tagIndex,
-                (request, token) => OpenRouterDecisions.RequestAsync(request, token, settings, input.SourceSession), record =>
-            {
-                records.Add(record);
-                try { DecisionHistory.Append(record); }
-                catch (Exception ex)
-                {
-                    record["history_error"] = "Could not save this result to Decision History.";
-                    Logs.Warning($"MagicPrompt: could not save decision history: {ex.Message}");
-                }
-            }, input.InterruptToken).GetAwaiter().GetResult();
+                (request, token) => OpenRouterDecisions.RequestAsync(request, token, settings, input.SourceSession),
+                records.Add, input.InterruptToken).GetAwaiter().GetResult();
             if (records.Count > 0) AddMetadata(input, records);
             else if (!input.InterruptToken.IsCancellationRequested)
                 AddNote(input, tagIndex, "skipped", "No response text to check.");
@@ -191,6 +194,7 @@ internal static class DecisionEvaluator
         string evidence = (string)fetched["decision_evidence"];
         if (string.IsNullOrWhiteSpace(evidence)) return null;
         string requestId = Guid.NewGuid().ToString("N");
+        int remainingSkipChecks = selection.SkipQuestionCount;
         foreach (JObject question in selection.Questions)
         {
             if (interruptToken.IsCancellationRequested) break;
@@ -237,16 +241,24 @@ internal static class DecisionEvaluator
                 record["error"] = ex is OperationCanceledException ? "Decision model timed out" : ex.Message;
             }
             record["latency_ms"] = elapsed.Elapsed.TotalMilliseconds;
-            string skipIf = (string)question["skipIf"];
-            bool skip = (string)record["status"] == "ok" && MatchesSkipRule(question, record["answer"], skipIf);
+            string skipIf = MatchableSkipValue(question);
+            bool completed = (string)record["status"] == "ok";
+            bool skip = completed && MatchesSkipRule(question, record["answer"], skipIf);
             if (skip)
             {
                 record["generation_skipped"] = true;
                 record["skip_if"] = skipIf;
             }
             save(record);
-            if (skip) return record;
+            if (skip)
+            {
+                ModelStats.RecordSkipIf(fetched, skipped: true);
+                return record;
+            }
+            if (completed && skipIf.Length > 0) remainingSkipChecks--;
         }
+        if (selection.SkipQuestionCount > 0 && remainingSkipChecks == 0)
+            ModelStats.RecordSkipIf(fetched, skipped: false);
         return null;
     }
 
@@ -256,7 +268,7 @@ internal static class DecisionEvaluator
         return (string)question["type"] switch
         {
             "noul" when answer?.Type == JTokenType.Boolean => rule.Equals((bool)answer ? "yes" : "no", StringComparison.OrdinalIgnoreCase),
-            "choice" when answer?.Type == JTokenType.String => rule == (string)answer && question["options"].Values<string>().Contains(rule, StringComparer.Ordinal),
+            "choice" when answer?.Type == JTokenType.String => rule == (string)answer,
             _ => false
         };
     }

@@ -34,7 +34,9 @@ playwright-cli -s=magicprompt-tests run-code --filename=Tests/decision-models-ui
 playwright-cli -s=magicprompt-tests run-code --filename=Tests/decision-library-ui.browser.js
 playwright-cli -s=magicprompt-tests run-code --filename=Tests/decision-generate-ui.browser.js
 playwright-cli -s=magicprompt-tests run-code --filename=Tests/decision-picker-review-ui.browser.js
-playwright-cli -s=magicprompt-tests run-code --filename=Tests/decision-history-ui.browser.js
+playwright-cli -s=magicprompt-tests run-code --filename=Tests/decision-question-ui.browser.js
+playwright-cli -s=magicprompt-tests run-code --filename=Tests/stats-ui.browser.js
+playwright-cli -s=magicprompt-tests run-code --filename=Tests/stats-preferences-ui.browser.js
 ```
 
 The fixture mocks all API calls and uses a separate browser origin. It does not load or change real user settings. Checks cover instruction creation/editing, cancel, failed saves and retries, model searches and preference exclusivity, Escape handling, repeated modal cycles, prompt history actions and keyboard activation, and mobile overflow. The C# checks also cover provider migration and supported request schemas.
@@ -50,3 +52,5 @@ OpenRouter decision checks use offline fixtures for the native typed payload/res
 Decision parity checks cover the Generate model override and independent preset refresh, shared model-menu stars/blocks, parameter rebuilding, and the Decisions library layout/search/editor/save/cancel/import/export behavior.
 
 Picker review checks cover keyboard model selection and default recovery, visible and accessible blocked-selection warnings, stale preset isolation, and case-insensitive decision preferences. The C# catalog check verifies preference saves retain the public catalog while applying the updated favorites and blocks.
+
+Stats browser checks cover catalog ordering and independent loading, both Skip If windows and sort directions, unavailable versus zero metrics, prompt preference persistence and failures, reset permission and stale refreshes, keyboard focus, and narrow-screen layout.

@@ -1,6 +1,5 @@
 using Hartsy.Extensions.MagicPromptExtension;
 using Hartsy.Extensions.MagicPromptExtension.WebAPI;
-using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using SwarmUI.Core;
 using SwarmUI.Utils;
@@ -86,60 +85,6 @@ internal static class DecisionChecks
         DecisionEvaluator.AddMetadata(image, workflowRows);
         if ((bool)image.BuildExtraDataJObject()["mp_decisions"][0]["answer"] != true)
             throw new Exception("Checked image metadata lost its decision.");
-        string dataDir = Program.DataDir;
-        DirectoryInfo temporary = Directory.CreateTempSubdirectory("mp-decision-test-");
-        try
-        {
-            Program.DataDir = temporary.FullName;
-            foreach (JObject record in records) DecisionHistory.Append(record);
-            string directory = Path.Combine(temporary.FullName, "MagicPrompt", "Decisions");
-            string[] files = Directory.GetFiles(directory, "*.jsonl").OrderBy(path => path).ToArray();
-            if (File.ReadAllBytes(files[0])[0] != (byte)'{') throw new Exception("JSONL must start without a UTF-8 BOM.");
-            string[] persisted = files.SelectMany(File.ReadLines).ToArray();
-            if (!persisted.SequenceEqual(records.Select(record => record.ToString(Formatting.None))))
-                throw new Exception("Decision log did not append complete records in JSONL format.");
-            foreach (JObject row in workflowRows) DecisionHistory.Append(row);
-            JObject failure = (JObject)workflowRows[0].DeepClone();
-            failure["status"] = "error";
-            failure.Remove("answer");
-            DecisionHistory.Append(failure);
-            JObject cancelled = (JObject)failure.DeepClone();
-            cancelled["status"] = "cancelled";
-            cancelled["message"] = "Generation cancelled";
-            DecisionHistory.Append(cancelled);
-            JObject legacyCancellation = (JObject)failure.DeepClone();
-            legacyCancellation["error"] = "Generation cancelled";
-            DecisionHistory.Append(legacyCancellation);
-            JObject secondModel = (JObject)workflowRows[0].DeepClone();
-            secondModel["source"]["model"] = "second-model";
-            DecisionHistory.Append(secondModel);
-            JObject otherVersion = (JObject)workflowRows[0].DeepClone();
-            otherVersion["decision"]["title"] = "Updated refusal test";
-            otherVersion["decision_version"] = "latest-version";
-            DecisionHistory.Append(otherVersion);
-            JObject history = DecisionHistory.Read(DateOnly.FromDateTime(DateTime.UtcNow), 7, "", 0);
-            var chosen = history["series"].Single(series => (string)series["title"] == "Refusal rate");
-            history = DecisionHistory.Read(DateOnly.FromDateTime(DateTime.UtcNow), 7, (string)chosen["id"], 0);
-            var model = history["models"].Single(row => (string)row["model"] == "actual-model");
-            if ((int)model["completed"] != 2 || (int)model["errors"] != 1 || (int)model["yes"] != 1 || history["rows"].Count() != 6
-                || history["rows"].Count(row => (string)row["status"] == "cancelled") != 2
-                || history["models"].Count() != 2)
-                throw new Exception("History comparison must group renamed questions and exclude errors from Yes/No counts.");
-
-            DateOnly oldDate = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-120));
-            string oldDateText = oldDate.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
-            JObject legacyRow = (JObject)records[0].DeepClone();
-            ((JObject)legacyRow["decision"]).Remove("title");
-            File.WriteAllText(Path.Combine(directory, $"{oldDateText}.jsonl"), legacyRow.ToString(Formatting.None) + "\n", System.Text.Encoding.UTF8);
-            var oldHistory = await MagicPromptAPI.GetMagicPromptDecisionHistory(oldDateText, 30, "", 0);
-            if ((int)oldHistory["total"] != 1 || (string)oldHistory["series"][0]["title"] != "Did the model refuse?")
-                throw new Exception("History must read older pre-title records, including JSONL files with a BOM.");
-        }
-        finally
-        {
-            Program.DataDir = dataDir;
-            temporary.Delete(recursive: true);
-        }
     }
 
     private static async Task CheckCancellation(JObject source, DecisionEvaluator.Selection selection)
@@ -160,7 +105,7 @@ internal static class DecisionChecks
         recorded.Clear();
         await DecisionEvaluator.EvaluateAsync(source, selection, 0, (_, _) =>
             throw new Exception("A pre-cancelled generation must not start a check."), recorded.Add, interrupt.Token);
-        if (recorded.Count != 0) throw new Exception("A pre-cancelled generation must not create history rows.");
+        if (recorded.Count != 0) throw new Exception("A pre-cancelled generation must not create decision records.");
     }
 
     private static void CheckFreshCache()
@@ -195,7 +140,7 @@ internal static class DecisionChecks
             if (logged.Count != 1 || (match != null) != shouldSkip || ((bool?)logged[0]["generation_skipped"] == true) != shouldSkip)
                 throw new Exception($"Unexpected skip result for {type}, {answer}, '{rule}'.");
             if (shouldSkip && ((string)logged[0]["status"] != "ok" || (string)logged[0]["decision"]["id"] != "test"))
-                throw new Exception("A matching decision must remain a successful, attributed observation in history.");
+                throw new Exception("A matching decision must remain a successful, attributed observation.");
             try
             {
                 PromptHandler.SkipForDecision(match, 0);
