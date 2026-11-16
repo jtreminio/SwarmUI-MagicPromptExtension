@@ -119,7 +119,12 @@ internal static class DecisionEvaluator
     internal sealed record Selection(string Evaluator, JObject[] Questions)
     {
         internal int SkipQuestionCount { get; } = Questions.Count(question => MatchableSkipValue(question).Length > 0);
-        internal bool RequiresFreshResponse { get; } = Questions.Any(question => SkipValue(question).Length > 0);
+        internal bool HasSkipRules { get; } = Questions.Any(question => SkipValue(question).Length > 0);
+        // Include order, definitions, titles and rules so a settings edit never replays stale decisions.
+        internal string CacheIdentity => new JObject
+        {
+            ["evaluator"] = Evaluator, ["questions"] = new JArray(Questions.Select(question => question.DeepClone()))
+        }.ToString(Formatting.None);
     }
 
     internal static Selection ResolveSelection(JToken config, string selectedId, string endpoint, string selectedModel = "")
@@ -140,37 +145,49 @@ internal static class DecisionEvaluator
         return new Selection(model, selected);
     }
 
-    /// <summary>Records checks for the provider response and returns the first match that must skip generation.</summary>
-    internal static JObject Observe(JObject fetched, T2IParamInput input, int tagIndex, Selection selection, JObject settings)
+    /// <summary>Evaluates a new provider response before its text and decisions enter the cache together.</summary>
+    internal static PromptCache.Response CheckResponse(string text, JObject fetched, Selection selection,
+        Func<JObject, CancellationToken, Task<JObject>> evaluate, CancellationToken interruptToken)
     {
+        if (string.IsNullOrEmpty(text)) return new PromptCache.Response(text);
+        List<JObject> records = [];
+        void Note(string status, string message) => records.Add(new JObject { ["status"] = status, ["message"] = message });
         if (selection == null || selection.Questions.Length == 0)
         {
-            AddNote(input, tagIndex, "skipped", selection == null ? "Decision checks require a remote LLM response."
+            Note("skipped", selection == null ? "Decision checks require a remote LLM response."
                 : "No questions are included in Settings defaults. Choose a question on Generate or include one in Settings defaults.");
-            return null;
         }
-        if (fetched == null || (bool?)fetched["decision_source"]?["remote"] != true)
+        else if ((bool?)fetched?["decision_source"]?["remote"] != true)
         {
-            AddNote(input, tagIndex, "skipped", fetched == null ? "Cached response. Use a fresh response to run a check." : "No new remote provider response to check.");
-            return null;
+            Note("skipped", "No remote provider response to check.");
         }
-        try
+        else
         {
-            List<JObject> records = [];
-            JObject match = EvaluateAsync(fetched, selection, tagIndex,
-                (request, token) => OpenRouterDecisions.RequestAsync(request, token, settings, input.SourceSession),
-                records.Add, input.InterruptToken).GetAwaiter().GetResult();
-            if (records.Count > 0) AddMetadata(input, records);
-            else if (!input.InterruptToken.IsCancellationRequested)
-                AddNote(input, tagIndex, "skipped", "No response text to check.");
-            return match;
+            try
+            {
+                EvaluateAsync(fetched, selection, 0, evaluate, records.Add, interruptToken).GetAwaiter().GetResult();
+                interruptToken.ThrowIfCancellationRequested();
+                if (records.Count == 0) Note("skipped", "No response text to check.");
+            }
+            catch (OperationCanceledException) when (interruptToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                Note("error", "Could not run decision checks. See SwarmUI logs.");
+                Logs.Warning($"MagicPrompt: could not record decision checks: {ex.Message}");
+            }
         }
-        catch (Exception ex)
-        {
-            AddNote(input, tagIndex, "error", "Could not run decision checks. See SwarmUI logs.");
-            Logs.Warning($"MagicPrompt: could not record decision checks: {ex.Message}");
-            return null;
-        }
+        return new PromptCache.Response(text, records);
+    }
+
+    /// <summary>Each caller gets its own metadata, including cache hits and in-flight waiters.</summary>
+    internal static JObject Replay(PromptCache.Response response, T2IParamInput input, int tagIndex)
+    {
+        JObject[] records = response.DecisionsForTag(tagIndex);
+        if (records.Length > 0) AddMetadata(input, records);
+        return records.FirstOrDefault(record => (bool?)record["generation_skipped"] == true);
     }
 
     internal static void AddMetadata(T2IParamInput input, IEnumerable<JObject> records)
@@ -181,9 +198,6 @@ internal static class DecisionEvaluator
         foreach (JObject record in records) results.Add(record.DeepClone());
         input.ExtraMeta["mp_decisions"] = results;
     }
-
-    private static void AddNote(T2IParamInput input, int tagIndex, string status, string message) =>
-        AddMetadata(input, [new JObject { ["tag_index"] = tagIndex, ["status"] = status, ["message"] = message }]);
 
     internal static async Task<JObject> EvaluateAsync(JObject fetched, Selection selection, int tagIndex,
         Func<JObject, CancellationToken, Task<JObject>> evaluate, Action<JObject> save, CancellationToken interruptToken)

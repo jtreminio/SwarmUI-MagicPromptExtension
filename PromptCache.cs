@@ -1,10 +1,11 @@
+using Newtonsoft.Json.Linq;
 using SwarmUI.Utils;
 
 namespace Hartsy.Extensions.MagicPromptExtension;
 
 public class PromptCache
 {
-    private readonly Dictionary<CacheKey, string> _cache = new();
+    private readonly Dictionary<CacheKey, Response> _cache = new();
     private readonly LinkedList<CacheKey> _accessOrder = new();
     private readonly Dictionary<CacheKey, LinkedListNode<CacheKey>> _cacheNodes = new();
     private readonly Dictionary<CacheKey, TaskCompletionSource<PendingResult>> _pendingRequests = new();
@@ -21,10 +22,31 @@ public class PromptCache
 
     /// <summary>Outcome handed from the thread that owned an attempt to the threads waiting on it.
     /// A null <see cref="Value"/> means the attempt failed and <see cref="Error"/> explains why.</summary>
-    private sealed record PendingResult(string Value, string Error);
+    private sealed record PendingResult(Response Value, string Error);
+
+    /// <summary>A response and its completed decision records are published as one cache entry.</summary>
+    internal sealed class Response
+    {
+        internal string Text { get; }
+        private readonly JArray _decisions;
+        internal bool Cacheable => _decisions.All(record => (string)record["status"] is not ("error" or "cancelled"));
+
+        internal Response(string text, IEnumerable<JObject> decisions = null)
+        {
+            Text = text;
+            _decisions = new JArray((decisions ?? []).Select(record => record.DeepClone()));
+        }
+
+        internal JObject[] DecisionsForTag(int tagIndex) => _decisions.OfType<JObject>().Select(record =>
+        {
+            JObject copy = (JObject)record.DeepClone();
+            copy["tag_index"] = tagIndex;
+            return copy;
+        }).ToArray();
+    }
 
     /// <summary>A null seed represents normal cache mode, which reuses responses across image seeds.</summary>
-    private readonly record struct CacheKey(string Prompt, string Instructions, string ModelId, string Backend, string Thinking, long? Seed, Guid? FreshRequestId);
+    private readonly record struct CacheKey(string Prompt, string Instructions, string ModelId, string Backend, string Thinking, long? Seed, string DecisionIdentity);
 
     public PromptCache(int maxSize = 1000)
     {
@@ -56,14 +78,14 @@ public class PromptCache
     /// </summary>
     public string GetOrCreate(string prompt, string instructionId, string modelId, string thinking, string backend, long seed, bool useCache, Func<string> createValue, int timeoutMs, CancellationToken cancellationToken, out string error)
     {
-        return GetOrCreate(prompt, instructionId, modelId, thinking, backend, seed, useCache, createValue, timeoutMs, cancellationToken, out error, requireFresh: false);
+        return GetOrCreateResponse(prompt, instructionId, modelId, thinking, backend, seed, useCache,
+            () => new Response(createValue()), timeoutMs, cancellationToken, out error)?.Text;
     }
 
-    internal string GetOrCreate(string prompt, string instructionId, string modelId, string thinking, string backend, long seed, bool useCache, Func<string> createValue, int timeoutMs, CancellationToken cancellationToken, out string error, bool requireFresh)
+    internal Response GetOrCreateResponse(string prompt, string instructionId, string modelId, string thinking, string backend, long seed, bool useCache, Func<Response> createValue, int timeoutMs, CancellationToken cancellationToken, out string error, string decisionIdentity = null)
     {
         var cacheKey = BuildCacheKey(prompt, instructionId, modelId, backend, thinking, useCache ? null : seed);
-        // Each Skip If check needs its own fetch, including when another generation uses the same seed.
-        if (requireFresh) cacheKey = cacheKey with { FreshRequestId = Guid.NewGuid() };
+        cacheKey = cacheKey with { DecisionIdentity = decisionIdentity };
         var effectiveTimeout = timeoutMs > 0 ? timeoutMs : DefaultTimeoutMs;
         error = null;
 
@@ -132,12 +154,13 @@ public class PromptCache
                 }
 
                 // Make the request OUTSIDE the lock to avoid blocking other threads
-                string result = null;
+                Response result = null;
                 string attemptError = null;
                 try
                 {
                     result = createValue();
-                    if (string.IsNullOrEmpty(result))
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (string.IsNullOrEmpty(result?.Text))
                     {
                         result = null;
                         attemptError = "LLM returned an empty response";
@@ -173,7 +196,7 @@ public class PromptCache
                 {
                     if (result != null)
                     {
-                        if (!requireFresh) AddToCacheLocked(cacheKey, result);
+                        if (result.Cacheable) AddToCacheLocked(cacheKey, result);
                         _attemptCounts.Remove(cacheKey);
                     }
 
@@ -248,7 +271,7 @@ public class PromptCache
             : new string(prompt.Trim().ToLowerInvariant().Where(c => !char.IsWhiteSpace(c)).ToArray());
     }
 
-    private bool TryGetFromCacheLocked(CacheKey key, out string cachedResult)
+    private bool TryGetFromCacheLocked(CacheKey key, out Response cachedResult)
     {
         if (!_cache.TryGetValue(key, out cachedResult))
         {
@@ -266,7 +289,7 @@ public class PromptCache
         return true;
     }
 
-    private void AddToCacheLocked(CacheKey key, string value)
+    private void AddToCacheLocked(CacheKey key, Response value)
     {
         while (_cache.Count >= _maxSize)
         {
@@ -295,7 +318,7 @@ public class PromptCache
         _cacheNodes[key] = newNode;
     }
 
-    private void SignalPendingRequestLocked(CacheKey key, string result, string error)
+    private void SignalPendingRequestLocked(CacheKey key, Response result, string error)
     {
         if (_pendingRequests.TryGetValue(key, out var tcs))
         {
@@ -310,7 +333,7 @@ public class PromptCache
 
     /// <summary>Waits on an in-flight attempt owned by another thread. Returns the value on success, or null on
     /// failure with <paramref name="retryable"/> set when it is worth looping back for another attempt.</summary>
-    private static string WaitForPendingRequest(TaskCompletionSource<PendingResult> tcs, int timeoutMs, CancellationToken cancellationToken, out bool retryable, out string error)
+    private static Response WaitForPendingRequest(TaskCompletionSource<PendingResult> tcs, int timeoutMs, CancellationToken cancellationToken, out bool retryable, out string error)
     {
         retryable = false;
         error = null;

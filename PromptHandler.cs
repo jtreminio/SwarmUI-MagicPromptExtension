@@ -241,13 +241,25 @@ public class PromptHandler
             var thinking = userInput.Get(_paramThinking, defVal: "none");
             var seed = userInput.Get(T2IParamTypes.Seed, -1);
             var instructions = InstructionResolver.Resolve(request.SettingsResponse["settings"]?["instructions"], userInput, instructionId, _paramInstructions, variables);
-            JObject fetched = null;
             bool includeDecisionSource = request.Decisions?.Questions.Length > 0;
-            response = _cache.GetOrCreate(content, instructions, modelId, thinking, request.BackendIdentity, seed, useCache,
-                () => MakeLlmRequest(content, userInput, instructions, modelId, thinking, includeDecisionSource, request.SettingsResponse, out fetched),
-                request.TimeoutMs, userInput.InterruptToken, out error, requireFresh: request.Decisions?.RequiresFreshResponse == true);
+            // Skip rules need an independent outcome per seed, even with broad cache reuse enabled.
+            bool shareAcrossSeeds = useCache && request.Decisions?.HasSkipRules != true;
+            string decisionIdentity = request.CheckDecisions ? request.Decisions?.CacheIdentity ?? "no-remote-decisions" : null;
+            int waitTimeoutMs = (int)Math.Min(int.MaxValue, request.TimeoutMs + 90_000L * (request.Decisions?.Questions.Length ?? 0));
+            PromptCache.Response cached = _cache.GetOrCreateResponse(content, instructions, modelId, thinking,
+                request.BackendIdentity, seed, shareAcrossSeeds, () =>
+                {
+                    string text = MakeLlmRequest(content, userInput, instructions, modelId, thinking, includeDecisionSource,
+                        request.SettingsResponse, out JObject fetched);
+                    return request.CheckDecisions
+                        ? DecisionEvaluator.CheckResponse(text, fetched, request.Decisions,
+                            (check, token) => OpenRouterDecisions.RequestAsync(check, token, request.SettingsResponse["settings"] as JObject, userInput.SourceSession),
+                            userInput.InterruptToken)
+                        : new PromptCache.Response(text);
+                }, waitTimeoutMs, userInput.InterruptToken, out error, decisionIdentity);
+            response = cached?.Text;
             if (request.CheckDecisions && !string.IsNullOrEmpty(response))
-                decisionMatch = DecisionEvaluator.Observe(fetched, userInput, tagIndex, request.Decisions, request.SettingsResponse["settings"] as JObject);
+                decisionMatch = DecisionEvaluator.Replay(cached, userInput, tagIndex);
         }
         catch (OperationCanceledException) when (userInput.InterruptToken.IsCancellationRequested)
         {

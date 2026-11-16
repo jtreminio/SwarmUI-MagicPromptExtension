@@ -52,6 +52,8 @@ OpenRouter decision checks use offline fixtures for the native typed payload/res
 
 Decision parity checks cover the Generate model override and independent preset refresh, shared model-menu stars/blocks, parameter rebuilding, and the Decisions library layout/search/editor/save/cancel/import/export behavior.
 
+Decision cache checks repeat seeds 42–51 through the prompt handler and verify six accepted responses and four per-image skips, unchanged stats, settings invalidation, concurrent request sharing, metadata isolation, evaluator recovery, cancellation, and eviction. These use offline provider/evaluator fixtures and an isolated settings store; no paid inference is used.
+
 Picker review checks cover keyboard model selection and default recovery, visible and accessible blocked-selection warnings, stale preset isolation, and case-insensitive decision preferences. The C# catalog check verifies preference saves retain the public catalog while applying the updated favorites and blocks.
 
 Stats browser checks cover catalog ordering and independent loading, both Skip If windows and sort directions, unavailable versus zero metrics, prompt preference persistence and failures, reset permission and stale refreshes, keyboard focus, and narrow-screen layout.

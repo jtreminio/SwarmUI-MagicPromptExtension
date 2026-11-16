@@ -29,7 +29,7 @@ internal static class DecisionChecks
         if (source["decision_source"] != null) throw new Exception("Capture treated a loopback provider as remote.");
         DecisionEvaluator.CaptureSource(source, providerJson, "https://openrouter.ai/api/v1/chat/completions", "openrouter", "test-model", 123);
         await CheckCancellation(source, Select(settings));
-        CheckFreshCache();
+        await DecisionCacheChecks.Run();
         await CheckSkipRules(source);
         if (Environment.GetEnvironmentVariable("MP_TEST_DECISION_BATCH") == "1") await CheckBatchSkip();
         List<JObject> requests = [];
@@ -108,20 +108,6 @@ internal static class DecisionChecks
         if (recorded.Count != 0) throw new Exception("A pre-cancelled generation must not create decision records.");
     }
 
-    private static void CheckFreshCache()
-    {
-        PromptCache cache = new();
-        string Fetch(Func<string> request, bool fresh = false) => cache.GetOrCreate("test prompt", "instructions", "model", "none",
-            "remote", 42, true, request, 1000, CancellationToken.None, out _, requireFresh: fresh);
-
-        Fetch(() => "cached");
-        int attempts = 0;
-        string result = Fetch(() => ++attempts == 1 ? null : "fresh", fresh: true);
-        if (result != "fresh" || attempts != 2) throw new Exception("A fresh fetch must bypass the cache and retry a failed call.");
-        if (Fetch(() => "fresh again", fresh: true) != "fresh again" || Fetch(() => "unexpected") != "cached")
-            throw new Exception("A fresh fetch must not reuse or replace cached results.");
-    }
-
     private static async Task CheckSkipRules(JObject source)
     {
         async Task Check(string type, JToken answer, string rule, bool shouldSkip, bool evaluatorFailed = false)
@@ -171,12 +157,12 @@ internal static class DecisionChecks
               {"id":"second","title":"Skip on yes","question":"Did it mention a refusal?","type":"noul","options":[],"selected":true,"skipIf":"yes"},
               {"id":"third","title":"Rating","question":"How good was it?","type":"score","options":["Poor","Good"],"selected":true,"skipIf":"1"}]}}
             """);
-        if (Select(scoped, "first").RequiresFreshResponse || Select(scoped, "third").RequiresFreshResponse
-            || !Select(scoped, "second").RequiresFreshResponse || !Select(scoped).RequiresFreshResponse)
-            throw new Exception("Only armed questions in the current selection may bypass the cache.");
+        if (Select(scoped, "first").HasSkipRules || Select(scoped, "third").HasSkipRules
+            || !Select(scoped, "second").HasSkipRules || !Select(scoped).HasSkipRules)
+            throw new Exception("Only armed questions in the current selection may require a separate cache entry per seed.");
         JToken config = DecisionEvaluator.NormalizeSettings(scoped["decisions"]);
         if (DecisionEvaluator.ResolveSelection(config, "second", "http://[::1]:1234/v1/chat/completions") != null)
-            throw new Exception("A loopback provider must not bypass the prompt cache.");
+            throw new Exception("A loopback provider must not enable remote decision caching.");
         try
         {
             Select(scoped, "deleted-question");

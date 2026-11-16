@@ -59,7 +59,7 @@ public class MagicPromptExtension : Extension
 
         _paramUseCache = T2IParamTypes.Register<bool>(new T2IParamType(
             Name: "MP Use Cache",
-            Description: "Reuse cached LLM results for matching prompts across image seeds. When disabled, results are still cached, but only reused when the prompt, image seed, and LLM model all match.",
+            Description: "Reuse cached LLM results and decision checks for matching prompts across image seeds. Active Skip If rules always keep separate results per image seed, replaying both accepted responses and skips. When disabled, results are still cached, but only reused when the prompt, image seed, and LLM model all match. Changing decision questions, rules, or evaluator creates a new cache entry.",
             Default: "true",
             Group: paramGroup,
             OrderPriority: 6
