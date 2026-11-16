@@ -433,6 +433,7 @@ public class LLMAPICalls : MagicPromptAPI
             request.Content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
             ModelStats.Attempt attempt = null;
             JObject successfulResult = null;
+            string statsResponse = null;
             double latency = 0;
             try
             {
@@ -453,6 +454,7 @@ public class LLMAPICalls : MagicPromptAPI
                 using HttpResponseMessage response = await HttpClient.SendAsync(request, HttpCompletionOption.ResponseContentRead, requestCts.Token);
                 latency = System.Diagnostics.Stopwatch.GetElapsedTime(requestStarted).TotalMilliseconds;
                 string responseContent = await response.Content.ReadAsStringAsync(requestCts.Token);
+                statsResponse = responseContent;
                 interruptToken.ThrowIfCancellationRequested();
                 // Handle API errors indicated by status code
                 if (!response.IsSuccessStatusCode)
@@ -519,7 +521,7 @@ public class LLMAPICalls : MagicPromptAPI
             finally
             {
                 if (!interruptToken.IsCancellationRequested)
-                    ModelStats.CompleteAttempt(attempt, successfulResult != null ? latency : null, includeDecisionSource ? successfulResult : null);
+                    ModelStats.CompleteAttempt(attempt, successfulResult != null ? latency : null, includeDecisionSource ? successfulResult : null, statsResponse);
             }
         }
         catch (OperationCanceledException) when (interruptToken.IsCancellationRequested)

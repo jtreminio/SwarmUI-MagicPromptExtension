@@ -8,10 +8,43 @@ const MP_STATS_SORTS = {
     skipHigh: { label: 'All-time Skip If, high to low', metric: 'allTime', direction: -1 },
     skipLow: { label: 'All-time Skip If, low to high', metric: 'allTime', direction: 1 },
     recentHigh: { label: 'Recent Skip If, high to low', metric: 'recent', direction: -1 },
-    recentLow: { label: 'Recent Skip If, low to high', metric: 'recent', direction: 1 }
+    recentLow: { label: 'Recent Skip If, low to high', metric: 'recent', direction: 1 },
+    responsesHigh: { label: 'Responses/$1, high to low', metric: 'responsesPerDollar', direction: -1 },
+    responsesLow: { label: 'Responses/$1, low to high', metric: 'responsesPerDollar', direction: 1 },
+    skippedDollarHigh: { label: 'Skipped/$1, high to low', metric: 'skippedPerDollar', direction: -1 },
+    skippedDollarLow: { label: 'Skipped/$1, low to high', metric: 'skippedPerDollar', direction: 1 },
+    latencyLow: { label: 'Response time, fast to slow', metric: 'latency', direction: 1 },
+    latencyHigh: { label: 'Response time, slow to fast', metric: 'latency', direction: -1 }
 };
 
 function mpStatsRate(matches, total) { return total > 0 ? matches / total : null; }
+
+function mpStatsPerDollar(count, cost, samples = count) {
+    if (!Number.isFinite(count) || count < 0 || !Number.isFinite(cost) || cost < 0
+        || !Number.isFinite(samples) || samples <= 0 || count > samples) return null;
+    if (count === 0) return 0;
+    return cost === 0 ? Infinity : count / cost;
+}
+
+function mpStatsDollarDisplay(value) {
+    if (value === null) return '—';
+    if (value === Infinity) return 'Free';
+    if (value > 0 && value < 1) return '<1';
+    return value.toLocaleString(undefined, { maximumFractionDigits: 0 });
+}
+
+function mpStatsDollarLine(label, value) {
+    const line = mpStatsElement('div', 'mp-stats-dollar-line');
+    const summary = value === null ? `${label} per $1 unavailable. No usable reported cost data.`
+        : value === Infinity ? `${label}: no charge reported for the observed requests.`
+        : label === 'Skipped'
+            ? `Estimated skipped responses per $1 of prompt spend, including evaluated responses that pass. Based on reported charges for resolved Skip If outcomes.`
+            : `Estimated completed responses per $1 of prompt spend, including skipped responses. Based on reported charges.`;
+    line.title = summary;
+    line.append(mpStatsElement('span', 'mp-stats-period', label), mpStatsElement('span', 'mp-stats-value', mpStatsDollarDisplay(value)),
+        mpStatsElement('span', 'visually-hidden', summary));
+    return line;
+}
 
 function mpStatsPercentage(rate) {
     if (rate === null) return '—';
@@ -71,7 +104,10 @@ function mpStatsSortRows(models, mode) {
             rank: catalog?.index ?? 0,
             catalogGroup: !catalog ? 3 : model.provider === 'openaiapi' ? 1 : Number(catalog.row.created) > 0 ? 0 : 2,
             allTime: mpStatsRate(model.skipped, model.skip_completed),
-            recent: mpStatsRate(model.recent_skipped, model.recent_skip_completed)
+            recent: mpStatsRate(model.recent_skipped, model.recent_skip_completed),
+            responsesPerDollar: mpStatsPerDollar(model.costed_completed, model.cost_total),
+            skippedPerDollar: mpStatsPerDollar(model.costed_skipped, model.skip_cost_total, model.costed_skip_completed),
+            latency: Number.isFinite(model.latency_ms) ? model.latency_ms : null
         };
     });
     const { metric, direction } = MP_STATS_SORTS[mode];
@@ -120,6 +156,8 @@ function mpStatsTableRow(model, confirm, busy, canUse) {
     const provider = Object.hasOwn(MP_STATS_PROVIDERS, model.provider) ? MP_STATS_PROVIDERS[model.provider] : model.provider;
     const identity = model.name === model.model ? provider : `${provider} · ${model.model}`;
     heading.append(mpStatsElement('div', 'mp-stats-model', model.name), mpStatsElement('div', 'mp-stats-provider', identity));
+    const latency = Number.isFinite(model.latency_ms) ? `${Math.round(model.latency_ms / 1000)} s` : '—';
+    heading.append(mpStatsElement('div', 'mp-stats-latency', `Avg response: ${latency}`));
 
     const controls = mpStatsElement('div', 'mp-stats-actions');
     const name = `${model.name} (${model.provider}, ${model.model})`;
@@ -160,7 +198,8 @@ function mpStatsTableRow(model, confirm, busy, canUse) {
     if (busy) for (const control of heading.querySelectorAll('button')) control.setAttribute('aria-disabled', 'true');
     row.append(heading);
 
-    const latency = model.latency_ms === null ? '—' : `${Math.round(model.latency_ms / 1000)} s`;
+    const cost = mpStatsElement('div', 'mp-stats-cost');
+    cost.append(mpStatsDollarLine('Responses', model.responsesPerDollar), mpStatsDollarLine('Skipped', model.skippedPerDollar));
     const skipRates = mpStatsElement('div', 'mp-stats-skip');
     skipRates.append(
         mpStatsRateDisplay('All time', model.skipped, model.skip_completed, 'Skip If', ' all time'),
@@ -168,7 +207,7 @@ function mpStatsTableRow(model, confirm, busy, canUse) {
             model.recent_skipped, model.recent_skip_completed, 'Skip If', ` in the last ${model.recent_skip_completed}`)
     );
     for (const [label, content] of [
-        ['Latency', mpStatsElement('span', 'mp-stats-value', latency)],
+        ['Prompts for $1', cost],
         ['Error Rate', mpStatsRateDisplay('', model.errors, model.completed + model.errors, 'Error')],
         ['Skip If Rate', skipRates],
         ['Completed', mpStatsElement('span', 'mp-stats-value', model.completed.toLocaleString())]
@@ -197,7 +236,7 @@ function mpCreateStats() {
         <div class="modal-body">
           <div class="mp-stats-tools"><label for="mpStatsSort">Sort</label><select id="mpStatsSort" class="form-select"></select></div>
           <table aria-label="Model stats" role="table" hidden>
-            <thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">Model</th><th scope="col" role="columnheader">Latency</th><th scope="col" role="columnheader">Error Rate</th><th scope="col" role="columnheader">Skip If Rate</th><th scope="col" role="columnheader" aria-label="Completed requests" title="Completed requests">#</th></tr></thead>
+            <thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">Model</th><th scope="col" role="columnheader">Prompts for $1</th><th scope="col" role="columnheader">Error Rate</th><th scope="col" role="columnheader">Skip If Rate</th><th scope="col" role="columnheader" aria-label="Completed requests" title="Completed requests">#</th></tr></thead>
           </table>
         </div>
         <div class="modal-footer"><p class="mp-stats-status" role="status"></p><button type="button" class="basic-button" id="mpStatsRefresh">Refresh</button><button type="button" class="basic-button" data-bs-dismiss="modal">Close</button></div>

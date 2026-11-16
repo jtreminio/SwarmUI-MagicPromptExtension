@@ -9,9 +9,9 @@ async page => {
         MP.settings = mpNormalizeSettings(testSettings);
         testStats = [
             { provider: 'openrouter', model: 'old/model', completed: 0, errors: 0 },
-            { provider: 'openrouter', model: 'newest', completed: 530, errors: 10, latency_ms: 1823, skipped: 36, skip_completed: 400, recent_skipped: 36, recent_skip_completed: 100 },
-            { provider: 'openrouter', model: 'older', completed: 405, errors: 0, latency_ms: 923, skipped: 103, skip_completed: 200, recent_skipped: 0, recent_skip_completed: 100 },
-            { provider: 'openrouter', model: 'tied', completed: 14, errors: 0, latency_ms: 0, skipped: 0, skip_completed: 14, recent_skipped: 0, recent_skip_completed: 14 },
+            { provider: 'openrouter', model: 'newest', costed_completed: 100, cost_total: 0.2, costed_skip_completed: 50, costed_skipped: 10, skip_cost_total: 0.1, completed: 530, errors: 10, latency_ms: 1823, skipped: 36, skip_completed: 400, recent_skipped: 36, recent_skip_completed: 100 },
+            { provider: 'openrouter', model: 'older', costed_completed: 1, cost_total: 4, costed_skip_completed: 1, costed_skipped: 0, skip_cost_total: 4, completed: 405, errors: 0, latency_ms: 923, skipped: 103, skip_completed: 200, recent_skipped: 0, recent_skip_completed: 100 },
+            { provider: 'openrouter', model: 'tied', costed_completed: 2, cost_total: 0, costed_skip_completed: 2, costed_skipped: 1, skip_cost_total: 0, completed: 14, errors: 0, latency_ms: 0, skipped: 0, skip_completed: 14, recent_skipped: 0, recent_skip_completed: 14 },
             { provider: 'openrouter', model: 'google/model-a', completed: 2, errors: 1, latency_ms: 225, skipped: 1, skip_completed: 2, recent_skipped: 1, recent_skip_completed: 2 },
             { provider: 'openrouter', model: 'GOOGLE/MODEL-A', completed: 7, errors: 0, latency_ms: 400 },
             { provider: 'openaiapi', model: 'local/z', completed: 0, errors: 2 },
@@ -96,12 +96,25 @@ async page => {
     check(await action(geminiAlias, 'Unstar').isVisible(), 'Exact stats rows failed to share a case-insensitive preference');
     check(await action(gemini, 'Unstar').getByText('★', { exact: true }).evaluate(star =>
         getComputedStyle(star).color === 'rgb(245, 179, 1)'), 'Starred models do not use the main menu’s yellow star');
-    check(await aurora.getByText('2 s', { exact: true }).isVisible(), 'Latency is not rounded to whole seconds');
+    check(await aurora.getByText('Avg response: 2 s', { exact: true }).isVisible(), 'Latency is not rounded to whole seconds');
     check(await aurora.getByText('1.9%', { exact: true }).isVisible(), 'Wrong error denominator');
+    check(await table.getByRole('columnheader', { name: 'Prompts for $1', exact: true }).isVisible(), 'Missing dollar metric header');
+    const costs = aurora.locator('.mp-stats-cost');
+    check(await costs.getByText('500', { exact: true }).isVisible() && await costs.getByText('100', { exact: true }).isVisible(),
+        'Dollar estimates used historical counts or omitted spend on passing responses');
+    check(await zenith.locator('.mp-stats-cost').getByText('Free', { exact: true }).count() === 2
+        && await atlas.locator('.mp-stats-cost').getByText('<1', { exact: true }).isVisible()
+        && await atlas.locator('.mp-stats-cost').getByText('0', { exact: true }).isVisible(),
+        'Free, sub-dollar yield and zero observed skips are indistinguishable');
+    check(!/Recorded spend|priced responses|Evaluation spend/.test(await modal.textContent()), 'Unrequested cost details are visible');
+    await modal.locator('.modal-body').evaluate(el => el.scrollTop = 0);
+    await page.waitForFunction(() => getComputedStyle(document.getElementById('mpStats')).opacity === '1');
+    await page.screenshot({ path: '/tmp/mp-cost-desktop.png' });
+
     check(await aurora.getByText('9%', { exact: true }).isVisible() && await aurora.getByText('36%', { exact: true }).isVisible(), 'All-time and recent Skip If percentages use different denominators');
     check(await aurora.getByText('All time', { exact: true }).isVisible() && await aurora.getByText('Last 100', { exact: true }).isVisible(), 'Missing Skip If period labels');
-    check(await zenith.getByText('Last 14', { exact: true }).isVisible() && await zenith.getByText('0 s', { exact: true }).isVisible(), 'Missing partial recent window or sampled zero latency');
-    check(await zenith.getByText('0%', { exact: true }).count() === 3 && await older.getByText('—', { exact: true }).count() === 4, 'Missing rates and actual zero rates are indistinguishable');
+    check(await zenith.getByText('Last 14', { exact: true }).isVisible() && await zenith.getByText('Avg response: 0 s', { exact: true }).isVisible(), 'Missing partial recent window or sampled zero latency');
+    check(await zenith.getByText('0%', { exact: true }).count() === 3 && await older.getByText('—', { exact: true }).count() === 5, 'Missing rates and actual zero rates are indistinguishable');
     check(await older.getByText('Recent', { exact: true }).isVisible(), 'Empty recent period label is misleading');
     check(await zeta.getByText('100%', { exact: true }).isVisible(), 'Error-only model should have a 100% error rate');
     check(await model('unknown/z').getByText('<0.1%', { exact: true }).isVisible() && await model('unknown/z').getByText('>99.9%', { exact: true }).isVisible(), 'Non-endpoint rates look like exact endpoints');
@@ -165,7 +178,11 @@ async page => {
         ['All-time Skip If, low to high', ['Zenith 14B', 'Aurora 70B', 'Atlas 32B', 'unknown/z']],
         ['All-time Skip If, high to low', ['unknown/z', 'Atlas 32B', 'Aurora 70B', 'Zenith 14B']],
         ['Recent Skip If, low to high', ['Zenith 14B', 'Atlas 32B', 'Aurora 70B']],
-        ['Recent Skip If, high to low', ['Aurora 70B', 'Zenith 14B', 'Atlas 32B']]
+        ['Recent Skip If, high to low', ['Aurora 70B', 'Zenith 14B', 'Atlas 32B']],
+        ['Responses/$1, high to low', ['Zenith 14B', 'Aurora 70B', 'Atlas 32B']],
+        ['Responses/$1, low to high', ['Atlas 32B', 'Aurora 70B', 'Zenith 14B']],
+        ['Skipped/$1, high to low', ['Zenith 14B', 'Aurora 70B', 'Atlas 32B']],
+        ['Skipped/$1, low to high', ['Atlas 32B', 'Aurora 70B', 'Zenith 14B']]
     ]) {
         await sort.selectOption({ label });
         await matchOrder(['Gemini Flash', 'GOOGLE/MODEL-A', ...expected], 'Sort failed for ' + label);
@@ -174,6 +191,8 @@ async page => {
     await page.setViewportSize({ width: 720, height: 844 });
     check(await modal.evaluate(el => el.querySelector('.modal-body').scrollWidth <= el.querySelector('.modal-body').clientWidth), 'Stats overflows a 720 px viewport');
     await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForFunction(() => getComputedStyle(document.getElementById('mpStats')).opacity === '1');
+    await page.screenshot({ path: '/tmp/mp-cost-mobile.png' });
     check(await modal.evaluate(el => document.documentElement.scrollWidth <= innerWidth && el.scrollWidth <= innerWidth
         && el.querySelector('.modal-body').scrollWidth <= el.querySelector('.modal-body').clientWidth), 'Stats overflows mobile');
     check(await groupHeading(older).isVisible() && await errorLabelFollowsTrack(), 'Mobile loses group headings or separates the error rate');
@@ -268,7 +287,7 @@ async page => {
     await waitForFocus(reset);
     await page.evaluate(() => releaseStatsRead());
     await page.waitForFunction(() => testStatsReads === 0);
-    check(await aurora.getByText('—', { exact: true }).count() === 4, 'Reset failed to clear both skip windows or late refresh restored old metrics');
+    check(await aurora.getByText('—', { exact: true }).count() === 5, 'Reset failed to clear both skip windows or late refresh restored old metrics');
     check(await action(aurora, 'Unstar').isVisible(), 'Reset changed preferences');
     await page.evaluate(() => { testStatsFailures.read = 'Stats unavailable'; });
     await refresh.click();

@@ -14,6 +14,7 @@ using SwarmUI.WebAPI;
 internal static class ModelStatsChecks
 {
     private const string Reply = """{"model":"routed-alias","choices":[{"message":{"content":"Test provider prompt"}}]}""";
+    private const string UsageReply = """{"model":"routed-alias","choices":[{"message":{"content":"Test provider prompt"}}],"usage":{"prompt_tokens":12,"completion_tokens":8,"total_tokens":20,"cost":0.002}}""";
     private const string Local = "openaiapi";
     private static readonly TimeSpan Deadline = TimeSpan.FromSeconds(8);
 
@@ -33,6 +34,7 @@ internal static class ModelStatsChecks
             Check((await Read()).Count == 0, "Stats must start empty with an old decision log present.");
 
             await CheckIdentityAndLatency(provider, baseUrl);
+            await CheckUsageCosts(provider, baseUrl);
             await CheckDirectActions(provider, baseUrl);
             await CheckCatalogExclusion(provider, baseUrl);
             await CheckSharedTagRequests(provider);
@@ -90,6 +92,97 @@ internal static class ModelStatsChecks
         Counts(await Reset(Local, longId), longId);
     }
 
+    private static async Task CheckUsageCosts(HttpListener listener, string baseUrl)
+    {
+        const string model = "cost/cohorts";
+        const string usage = """{"prompt_tokens":193,"completion_tokens":21,"total_tokens":214,"future_token_counter":9007199254740993,"cost":0.002,"prompt_tokens_details":{"cached_tokens":12},"completion_tokens_details":{"reasoning_tokens":4}}""";
+        string Priced(string rawUsage) => "{\"id\":\"gen-fixture\",\"model\":\"routed-cost-model\",\"choices\":[{\"message\":{\"content\":\"Test provider prompt\"}}],\"usage\":" + rawUsage + "}";
+        async Task<JObject> Complete(string rawUsage, bool decision = true, string requested = model, string provider = "openrouter") =>
+            await ReplyTo(listener, Send(baseUrl, requested, decisionSource: decision, provider: provider), Priced(rawUsage));
+
+        // Old rows have only historical counters; a new charge must not use that old denominator.
+        await ReplyTo(listener, Send(baseUrl, model, provider: "openrouter"));
+        JObject skipped = await Complete(usage);
+        JToken row = Counts(await Read(), model, completed: 2, provider: "openrouter");
+        Check((long?)row["costed_completed"] == 1 && (decimal?)row["cost_total"] == 0.002m,
+            "A new reported charge must be recorded independently of historical completions.");
+        JObject passed = await Complete("""{"cost":0.008,"prompt_tokens":11,"completion_tokens":10,"total_tokens":21}""");
+        JObject free = await Complete("""{"cost":0,"prompt_tokens":1}""");
+        JObject unknown = await Complete("""{"prompt_tokens":10}""");
+        ModelStats.RecordSkipIf(skipped, true);
+        ModelStats.RecordSkipIf(skipped, true);
+        ModelStats.RecordSkipIf(passed, false);
+        ModelStats.RecordSkipIf(free, false);
+        ModelStats.RecordSkipIf(unknown, true);
+        row = Counts(await Read(), model, completed: 5, skipCompleted: 4, skipped: 2, provider: "openrouter");
+        Check((long?)row["costed_completed"] == 3 && (decimal?)row["cost_total"] == 0.01m
+            && (long?)row["costed_skip_completed"] == 3 && (long?)row["costed_skipped"] == 1
+            && (decimal?)row["skip_cost_total"] == 0.01m,
+            "Budget metrics must use known-cost cohorts, include passing response spend, and count receipts once.");
+        BsonDocument[] records = UsageRows(model);
+        Check(records.Length == 4, "Persist one raw usage record for each actual response that supplies usage.");
+        BsonDocument raw = records.Single(record => record["usage_json"].AsString == usage);
+        Check(raw["provider"].AsString == "openrouter" && raw["model"].AsString == model
+            && raw["provider_request_id"].AsString == "gen-fixture" && raw["reported_model"].AsString == "routed-cost-model"
+            && raw["status"].AsString == "completed" && raw["skipped"].AsBoolean && raw["received_at_utc"].IsDateTime,
+            "Raw usage must retain precision, exact requested identity, response identity, timestamp and resolved skip outcome.");
+        Check(records.All(record => !record.ToString().Contains("Test provider prompt") && !record.ToString().Contains("Test request secret")),
+            "Usage storage must not include prompt or response text.");
+
+        // Optional and malformed charges must not break prompt generation or appear free.
+        foreach (string invalid in new[] { "null", "-1", "\"0.01\"", "1e100", "1e-100", "true" })
+        {
+            JObject result = await Complete("{\"cost\":" + invalid + ",\"prompt_tokens\":5}", decision: false, requested: "cost/invalid");
+            Check((bool?)result["success"] == true, "An invalid charge must not affect the generated prompt.");
+        }
+        JToken invalidRow = Counts(await Read(), "cost/invalid", completed: 6, provider: "openrouter");
+        Check((long?)invalidRow["costed_completed"] == 0 && UsageRows("cost/invalid").Length == 6,
+            "Invalid costs must remain raw evidence, without entering cost averages.");
+        await Complete("""{"cost":0.1234567890123456789012345678,"prompt_tokens":2}""", false, "cost/precision");
+        Check((decimal?)(await Read()).Single(item => (string)item["model"] == "cost/precision")["cost_total"] == 0.1234567890123456789012345678m,
+            "Reported charges must not round through binary double precision.");
+        await Complete("""{"cost":0.5,"prompt_tokens":2}""", false, "cost/local", Local);
+        Check((long?)(await Read()).Single(item => (string)item["model"] == "cost/local")["costed_completed"] == 0,
+            "An unsupported provider must not be assumed to report USD charges.");
+
+        // A billed response rejected by the parser retains usage, but is not a completed response.
+        string truncated = Priced(usage).Replace("\"message\":", "\"finish_reason\":\"length\",\"message\":");
+        JObject failed = await ReplyTo(listener, Send(baseUrl, "cost/failed", provider: "openrouter"), truncated);
+        Check(failed["error"] != null && (long?)Counts(await Read(), "cost/failed", errors: 1, provider: "openrouter")["costed_completed"] == 0
+            && UsageRows("cost/failed").Single()["status"].AsString == "error",
+            "Billed parser failures must retain raw usage without entering completed-response estimates.");
+
+        // Old model rows remain writable even with every new aggregate removed.
+        using (LiteDatabase database = new(Path.Combine(Program.DataDir, "MagicPrompt", "Stats.db")))
+        {
+            var models = database.GetCollection("models");
+            BsonDocument old = models.FindAll().Single(item => item["model"].AsString == model);
+            foreach (string field in new[] { "costed_completed", "cost_total", "costed_skip_completed", "costed_skipped", "skip_cost_total" }) old.Remove(field);
+            models.Update(old);
+        }
+        Check((long?)(await Read()).Single(item => (string)item["model"] == model)["costed_completed"] == 0,
+            "Legacy missing cost fields must read as an empty cost cohort.");
+        JObject lateDecision = await Complete(usage);
+        Task<JObject> pending = Send(baseUrl, model, decisionSource: true, provider: "openrouter");
+        HttpListenerContext inflight = await Receive(listener);
+        await Reset("openrouter", model);
+        ModelStats.RecordSkipIf(lateDecision, true);
+        JObject lateResponse = await ReplyTo(inflight, pending, Priced(usage));
+        ModelStats.RecordSkipIf(lateResponse, true);
+        Check(UsageRows(model).Length == 0 && UsageRows("cost/precision").Length == 1
+            && (long?)Counts(await Read(), model, provider: "openrouter")["costed_completed"] == 0,
+            "Reset must clear only this model's usage and prevent late responses or decisions resurrecting it.");
+        await Complete(usage, false);
+        Check((decimal?)Counts(await Read(), model, completed: 1, provider: "openrouter")["cost_total"] == 0.002m,
+            "A fresh post-reset request must start a new cost cohort.");
+    }
+
+    private static BsonDocument[] UsageRows(string model)
+    {
+        using LiteDatabase database = new(Path.Combine(Program.DataDir, "MagicPrompt", "Stats.db"));
+        return database.GetCollection("usage").FindAll().Where(record => record["model"].AsString == model).ToArray();
+    }
+
     private static async Task CheckDirectActions(HttpListener listener, string baseUrl)
     {
         Program.Sessions.GenericSharedUser.SaveGenericData("magicprompt", "config", Settings(baseUrl)["settings"].ToString());
@@ -131,10 +224,10 @@ internal static class ModelStatsChecks
         await Respond(first, "{}", status: 502);
         HttpListenerContext retry = await Receive(listener);
         Check(await RequestedModel(retry) == "tag/first", "The failed in-flight call must retry the first tag, once.");
-        await Respond(retry);
+        await Respond(retry, UsageReply);
         HttpListenerContext second = await Receive(listener);
         Check(await RequestedModel(second) == "tag/second", "The generation's second tag must dispatch its own model.");
-        await Respond(second);
+        await Respond(second, UsageReply);
         await Task.WhenAll(ownerDone, waiterDone).WaitAsync(Deadline);
         T2IParamInput cached = TagInput(firstTag, seed: 3);
         await Task.Run(cached.ApplyLateSpecialLogic).WaitAsync(Deadline);
@@ -143,6 +236,8 @@ internal static class ModelStatsChecks
         JArray rows = await Read();
         Counts(rows, "tag/first", completed: 1, errors: 1);
         Counts(rows, "tag/second", completed: 1);
+        Check(UsageRows("tag/first").Length == 1 && UsageRows("tag/second").Length == 1,
+            "Shared in-flight calls and subsequent cache hits must not duplicate raw usage records.");
         Check(rows.All(row => (string)row["model"] != "generation/default"), "A tag model must take precedence over the generation model.");
     }
 
@@ -340,7 +435,7 @@ internal static class ModelStatsChecks
         Task<JObject>[] requests = Enumerable.Range(0, 20).Select(_ => Send(baseUrl, model, decisionSource: true)).ToArray();
         HttpListenerContext[] calls = new HttpListenerContext[requests.Length];
         for (int i = 0; i < calls.Length; i++) calls[i] = await Receive(listener);
-        await Task.WhenAll(calls.Select(call => Respond(call))).WaitAsync(Deadline);
+        await Task.WhenAll(calls.Select(call => Respond(call, UsageReply))).WaitAsync(Deadline);
         JObject[] responses = await Task.WhenAll(requests).WaitAsync(Deadline);
         Check(responses.All(result => (bool?)result["success"] == true), "Concurrent provider requests failed.");
         DecisionEvaluator.Selection selection = new("test/private-evaluator", [Question("one", "yes")]);
@@ -352,6 +447,9 @@ internal static class ModelStatsChecks
         JArray rows = await Read();
         Counts(rows, model, completed: 20, skipCompleted: 20, skipped: 7);
         Recent(rows, model, completed: 20, skipped: 7);
+        BsonDocument[] usage = UsageRows(model);
+        Check(usage.Length == 20 && usage.Count(record => record["skipped"].AsBoolean) == 7,
+            "Concurrent usage records must retain each response and its individual Skip If outcome.");
     }
 
     private static async Task CheckStoreFailures(HttpListener listener, string baseUrl)
@@ -395,9 +493,9 @@ internal static class ModelStatsChecks
         BsonArray window = concurrent["recent_skip_outcomes"].AsArray;
         Check(concurrent["completed"].AsInt64 == 20 && window.Count == 20 && window.Count(outcome => outcome.AsBoolean) == 7,
             "Counters and the bounded window must be durable when the database is independently reopened.");
-        Check(rows.All(row => row.Keys.ToHashSet().SetEquals(new[] { "_id", "provider", "model", "revision", "completed", "errors", "latency_total_ms", "skip_completed", "skipped", "recent_skip_outcomes" })
+        Check(rows.All(row => row.Keys.ToHashSet().SetEquals(new[] { "_id", "provider", "model", "revision", "completed", "errors", "latency_total_ms", "skip_completed", "skipped", "recent_skip_outcomes", "costed_completed", "cost_total", "costed_skip_completed", "costed_skipped", "skip_cost_total" })
             && row["recent_skip_outcomes"].AsArray.All(outcome => outcome.IsBoolean)),
-            "Only model aggregate counters, recent Boolean outcomes and reset revisions belong in the stats database.");
+            "Only aggregate counters, costs, recent Boolean outcomes and reset revisions belong in model rows.");
     }
 
     private static void CheckPermissions()

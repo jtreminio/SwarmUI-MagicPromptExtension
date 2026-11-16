@@ -19,6 +19,10 @@
 .mp-stats .mp-stats-group-toggle[aria-expanded="true"]::before { transform: rotate(45deg); }
 .mp-stats .mp-stats-model { font-weight: 600; }
 .mp-stats .mp-stats-provider { margin-top: .125rem; color: var(--text-soft, var(--text)); font-weight: 400; font-size: .8rem; }
+.mp-stats .mp-stats-latency { margin-top: .2rem; color: var(--text-soft, var(--text)); font-weight: 400; font-size: .77rem; font-variant-numeric: tabular-nums; }
+.mp-stats .mp-stats-cost { display: grid; gap: .2rem; min-width: 8rem; }
+.mp-stats .mp-stats-dollar-line { display: grid; grid-template-columns: auto minmax(3rem, max-content); align-items: baseline; gap: .65rem; }
+.mp-stats .mp-stats-dollar-line .mp-stats-period { text-align: left; }
 .mp-stats .mp-stats-actions { display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .4rem; }
 .mp-stats .mp-stats-actions .basic-button { min-height: 28px; padding: .13rem .45rem; font-size: .78rem; }
 .mp-stats [aria-disabled="true"] { opacity: .6; cursor: default; }
