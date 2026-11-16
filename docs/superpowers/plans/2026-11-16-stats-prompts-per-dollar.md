@@ -68,3 +68,13 @@
 - Independent review found three edge cases. All were fixed: invalid optional UTF-16 metadata cannot override successful generation (`/tmp/mp-cost-metadata-red.log` → `/tmp/mp-cost-metadata-green.log`); decimal aggregate overflow preserves raw usage/counters with unavailable totals (`/tmp/mp-cost-overflow-red.log` → `/tmp/mp-cost-review-green.log`); large finite dollar estimates use compact/scientific notation (`/tmp/mp-cost-format-red.log` → `/tmp/mp-cost-node-final.log`, plus real responsive browser checks).
 - User refinement: hide provider/codename line and add copy icon after model display name. Regression failed on visible codename (`/tmp/mp-cost-copy-red.log`); clipboard API, keyboard, HTTP fallback, denial handling and 320/390/801/1440px checks passed (`/tmp/mp-cost-copy-green.log`).
 - Final review: all reported findings addressed; no deferred findings. Work remains on the local feature branch; no deployment or live data reset performed.
+
+## User clarification: independent cost groups
+
+- Supersedes the earlier budget-yield formula: Responses excludes skipped counts and costs; Skipped excludes non-skipped counts and costs.
+- Store four dedicated cohort fields. Fresh priced completions enter Responses; matching Skip If outcomes move their own count/charge to Skipped. Rebuild from raw usage only for old rows missing the new fields, or when separating an overflowing sum needs recovery.
+- Preserve historical counters, exact-once receipts and reset revisions. Do not require reset; no priced samples in a group means unavailable.
+- Regression tests: distinct $0.008 non-skipped/$0.002 skipped spend; migration from the prior schema; no-check responses; frontend changes in either group's spend leave the other estimate unchanged.
+
+- Verification: C# and frontend regressions first failed with the old overlapping definitions (`/tmp/mp-cohorts-red.log`, `/tmp/mp-cohorts-ui-red.log`). New independent formulas and existing-usage migration pass C# checks (`/tmp/mp-cohorts-final.log`), 37 frontend tests (`/tmp/mp-cohorts-ui-green.log`) and Stats/clipboard browser checks (`/tmp/mp-cohorts-browser.log`, `/tmp/mp-cohorts-copy.log`).
+- Fresh review identified silent decimal precision loss when a very large charge is later removed. Regression failed (`/tmp/mp-cohorts-precision-red.log`); AddCost now marks inexact sums unavailable using arithmetic round-trip checks, allowing the existing raw-usage rebuild to recover separate exact totals. Final C# suite passes. No remaining review findings.

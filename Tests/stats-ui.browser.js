@@ -9,9 +9,9 @@ async page => {
         MP.settings = mpNormalizeSettings(testSettings);
         testStats = [
             { provider: 'openrouter', model: 'old/model', completed: 0, errors: 0 },
-            { provider: 'openrouter', model: 'newest', costed_completed: 100, cost_total: 0.2, costed_skip_completed: 50, costed_skipped: 10, skip_cost_total: 0.1, completed: 530, errors: 10, latency_ms: 1823, skipped: 36, skip_completed: 400, recent_skipped: 36, recent_skip_completed: 100 },
-            { provider: 'openrouter', model: 'older', costed_completed: 1, cost_total: 4, costed_skip_completed: 1, costed_skipped: 0, skip_cost_total: 4, completed: 405, errors: 0, latency_ms: 923, skipped: 103, skip_completed: 200, recent_skipped: 0, recent_skip_completed: 100 },
-            { provider: 'openrouter', model: 'tied', costed_completed: 2, cost_total: 0, costed_skip_completed: 2, costed_skipped: 1, skip_cost_total: 0, completed: 14, errors: 0, latency_ms: 0, skipped: 0, skip_completed: 14, recent_skipped: 0, recent_skip_completed: 14 },
+            { provider: 'openrouter', model: 'newest', response_cost_count: 90, response_cost_total: 0.18, skipped_cost_count: 10, skipped_cost_total: 0.01, completed: 530, errors: 10, latency_ms: 1823, skipped: 36, skip_completed: 400, recent_skipped: 36, recent_skip_completed: 100 },
+            { provider: 'openrouter', model: 'older', response_cost_count: 1, response_cost_total: 4, skipped_cost_count: 0, skipped_cost_total: 0, completed: 405, errors: 0, latency_ms: 923, skipped: 103, skip_completed: 200, recent_skipped: 0, recent_skip_completed: 100 },
+            { provider: 'openrouter', model: 'tied', response_cost_count: 1, response_cost_total: 0, skipped_cost_count: 1, skipped_cost_total: 0, completed: 14, errors: 0, latency_ms: 0, skipped: 0, skip_completed: 14, recent_skipped: 0, recent_skip_completed: 14 },
             { provider: 'openrouter', model: 'google/model-a', completed: 2, errors: 1, latency_ms: 225, skipped: 1, skip_completed: 2, recent_skipped: 1, recent_skip_completed: 2 },
             { provider: 'openrouter', model: 'GOOGLE/MODEL-A', completed: 7, errors: 0, latency_ms: 400 },
             { provider: 'openaiapi', model: 'local/z', completed: 0, errors: 2 },
@@ -100,12 +100,12 @@ async page => {
     check(await aurora.getByText('1.9%', { exact: true }).isVisible(), 'Wrong error denominator');
     check(await table.getByRole('columnheader', { name: 'Prompts for $1', exact: true }).isVisible(), 'Missing dollar metric header');
     const costs = aurora.locator('.mp-stats-cost');
-    check(await costs.getByText('500', { exact: true }).isVisible() && await costs.getByText('100', { exact: true }).isVisible(),
-        'Dollar estimates used historical counts or omitted spend on passing responses');
+    check(await costs.getByText('500', { exact: true }).isVisible() && await costs.getByText('1,000', { exact: true }).isVisible(),
+        'Dollar estimates mixed the independent response and skipped cost cohorts');
     check(await zenith.locator('.mp-stats-cost').getByText('Free', { exact: true }).count() === 2
         && await atlas.locator('.mp-stats-cost').getByText('<1', { exact: true }).isVisible()
-        && await atlas.locator('.mp-stats-cost').getByText('0', { exact: true }).isVisible(),
-        'Free, sub-dollar yield and zero observed skips are indistinguishable');
+        && await atlas.locator('.mp-stats-cost').getByText('—', { exact: true }).isVisible(),
+        'Free, sub-dollar yield and unobserved skipped-response costs are indistinguishable');
     check(!/Recorded spend|priced responses|Evaluation spend/.test(await modal.textContent()), 'Unrequested cost details are visible');
     await modal.locator('.modal-body').evaluate(el => el.scrollTop = 0);
     await page.waitForFunction(() => getComputedStyle(document.getElementById('mpStats')).opacity === '1');
@@ -182,7 +182,7 @@ async page => {
         ['Responses/$1, high to low', ['Zenith 14B', 'Aurora 70B', 'Atlas 32B']],
         ['Responses/$1, low to high', ['Atlas 32B', 'Aurora 70B', 'Zenith 14B']],
         ['Skipped/$1, high to low', ['Zenith 14B', 'Aurora 70B', 'Atlas 32B']],
-        ['Skipped/$1, low to high', ['Atlas 32B', 'Aurora 70B', 'Zenith 14B']]
+        ['Skipped/$1, low to high', ['Aurora 70B', 'Zenith 14B', 'Atlas 32B']]
     ]) {
         await sort.selectOption({ label });
         await matchOrder(['Gemini Flash', 'GOOGLE/MODEL-A', ...expected], 'Sort failed for ' + label);

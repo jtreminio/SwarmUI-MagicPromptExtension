@@ -14,13 +14,20 @@ function setup() {
     return context;
 }
 
-test('dollar estimates use known-cost counts and total spend on eligible passes and skips', () => {
+test('dollar estimates separate non-skipped and skipped counts and spend', () => {
     const ctx = setup();
     const model = { provider: 'openrouter', model: 'paid', completed: 1000, skipped: 90, skip_completed: 900,
-        costed_completed: 100, cost_total: 0.2, costed_skip_completed: 50, costed_skipped: 10, skip_cost_total: 0.1 };
+        costed_completed: 100, cost_total: 0.2, costed_skip_completed: 50, costed_skipped: 10, skip_cost_total: 0.1,
+        response_cost_count: 90, response_cost_total: 0.18, skipped_cost_count: 10, skipped_cost_total: 0.02 };
     const [row] = ctx.mpStatsSortRows([model], 'newest');
     assert.equal(row.responsesPerDollar, 500);
-    assert.equal(row.skippedPerDollar, 100);
+    assert.equal(row.skippedPerDollar, 500);
+    const changedSkip = { ...model, skipped_cost_total: 0.01 };
+    assert.equal(ctx.mpStatsSortRows([changedSkip], 'newest')[0].responsesPerDollar, 500);
+    assert.equal(ctx.mpStatsSortRows([changedSkip], 'newest')[0].skippedPerDollar, 1000);
+    const changedResponse = { ...model, response_cost_total: 0.36 };
+    assert.equal(ctx.mpStatsSortRows([changedResponse], 'newest')[0].responsesPerDollar, 250);
+    assert.equal(ctx.mpStatsSortRows([changedResponse], 'newest')[0].skippedPerDollar, 500);
     // Historical completion and skip counts must not enter either calculation.
     assert.equal(ctx.mpStatsSortRows([{ ...model, completed: 9000, skipped: 900 }], 'newest')[0].responsesPerDollar, 500);
 });
@@ -45,17 +52,16 @@ test('cost and latency sorts keep unknowns last in both directions', () => {
     const ctx = setup();
     const rows = [
         { model: 'unknown', latency_ms: null },
-        { model: 'paid', costed_completed: 100, cost_total: 0.2, latency_ms: 2500 },
-        { model: 'free', costed_completed: 2, cost_total: 0, latency_ms: 0 },
-        { model: 'expensive', costed_completed: 1, cost_total: 4, latency_ms: 7000 }
+        { model: 'paid', response_cost_count: 100, response_cost_total: 0.2, latency_ms: 2500 },
+        { model: 'free', response_cost_count: 2, response_cost_total: 0, latency_ms: 0 },
+        { model: 'expensive', response_cost_count: 1, response_cost_total: 4, latency_ms: 7000 }
     ].map(row => ({ provider: 'openrouter', ...row }));
     const ids = mode => Array.from(ctx.mpStatsSortRows(rows, mode), row => row.model);
     assert.deepEqual(ids('responsesHigh'), ['free', 'paid', 'expensive', 'unknown']);
     assert.deepEqual(ids('responsesLow'), ['expensive', 'paid', 'free', 'unknown']);
     assert.deepEqual(ids('latencyLow'), ['free', 'paid', 'expensive', 'unknown']);
     assert.deepEqual(ids('latencyHigh'), ['expensive', 'paid', 'free', 'unknown']);
-    const skipped = rows.map(row => ({ ...row, costed_skip_completed: row.costed_completed,
-        costed_skipped: row.costed_completed, skip_cost_total: row.cost_total }));
+    const skipped = rows.map(row => ({ ...row, skipped_cost_count: row.response_cost_count, skipped_cost_total: row.response_cost_total }));
     assert.deepEqual(Array.from(ctx.mpStatsSortRows(skipped, 'skippedDollarHigh'), row => row.model), ['free', 'paid', 'expensive', 'unknown']);
     assert.deepEqual(Array.from(ctx.mpStatsSortRows(skipped, 'skippedDollarLow'), row => row.model), ['expensive', 'paid', 'free', 'unknown']);
 });

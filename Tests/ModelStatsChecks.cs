@@ -119,8 +119,28 @@ internal static class ModelStatsChecks
             && (long?)row["costed_skip_completed"] == 3 && (long?)row["costed_skipped"] == 1
             && (decimal?)row["skip_cost_total"] == 0.01m,
             "Budget metrics must use known-cost cohorts, include passing response spend, and count receipts once.");
+        Check((long?)row["response_cost_count"] == 2 && (decimal?)row["response_cost_total"] == 0.008m
+            && (long?)row["skipped_cost_count"] == 1 && (decimal?)row["skipped_cost_total"] == 0.002m,
+            "Non-skipped and skipped estimates must have disjoint counts and charges (250 versus 500 per dollar).");
+        // Simulate the previous release: reconstruct the separated cohorts from stored usage once.
+        using (LiteDatabase database = new(Path.Combine(Program.DataDir, "MagicPrompt", "Stats.db")))
+        {
+            var models = database.GetCollection("models");
+            BsonDocument previous = models.FindAll().Single(item => item["model"].AsString == model);
+            foreach (string field in new[] { "response_cost_count", "response_cost_total", "skipped_cost_count", "skipped_cost_total" }) previous.Remove(field);
+            models.Update(previous);
+        }
+        row = (await Read()).Single(item => (string)item["model"] == model);
+        Check((long?)row["response_cost_count"] == 2 && (decimal?)row["response_cost_total"] == 0.008m
+            && (long?)row["skipped_cost_count"] == 1 && (decimal?)row["skipped_cost_total"] == 0.002m,
+            "Previously recorded usage must migrate without a reset or including unknown-price history.");
+        JObject withoutChecks = await Complete("""{"cost":0.012}""", decision: false);
+        row = (await Read()).Single(item => (string)item["model"] == model);
+        Check((long?)row["response_cost_count"] == 3 && (decimal?)row["response_cost_total"] == 0.02m
+            && (decimal?)row["skipped_cost_total"] == 0.002m,
+            "Requests without decision checks belong to Responses only, without changing Skipped costs.");
         BsonDocument[] records = UsageRows(model);
-        Check(records.Length == 4, "Persist one raw usage record for each actual response that supplies usage.");
+        Check(records.Length == 5, "Persist one raw usage record for each actual response that supplies usage.");
         BsonDocument raw = records.Single(record => record["usage_json"].AsString == usage);
         Check(raw["provider"].AsString == "openrouter" && raw["model"].AsString == model
             && raw["provider_request_id"].AsString == "gen-fixture" && raw["reported_model"].AsString == "routed-cost-model"
@@ -151,6 +171,20 @@ internal static class ModelStatsChecks
         Check(overflowRow["cost_total"].Type == JTokenType.Null && overflowRow["skip_cost_total"].Type == JTokenType.Null
             && UsageRows("cost/overflow").Length == 3 && (long?)overflowRow["costed_completed"] == 3,
             "Overflowing cost sums must become unavailable without dropping counters, raw usage or subsequent outcomes.");
+
+        // Separate representable groups must survive temporary combined overflow or rounding.
+        foreach (string large in new[] { "10000000000000000000000000000", decimal.MaxValue.ToString(System.Globalization.CultureInfo.InvariantCulture) })
+        {
+            string transferModel = "cost/transfer-" + large;
+            await Complete("""{"cost":0.002}""", decision: false, requested: transferModel);
+            JObject expensiveSkip = await Complete("{\"cost\":" + large + "}", requested: transferModel);
+            ModelStats.RecordSkipIf(expensiveSkip, true);
+            JToken transferred = (await Read()).Single(item => (string)item["model"] == transferModel);
+            Check((long?)transferred["response_cost_count"] == 1 && (decimal?)transferred["response_cost_total"] == 0.002m
+                && (long?)transferred["skipped_cost_count"] == 1
+                && (decimal?)transferred["skipped_cost_total"] == decimal.Parse(large, System.Globalization.CultureInfo.InvariantCulture),
+                "Moving an expensive skipped response must not round a remaining paid response to Free.");
+        }
 
         // Optional and malformed charges must not break prompt generation or appear free.
         foreach (string invalid in new[] { "null", "-1", "\"0.01\"", "1e100", "1e-100", "true" })
@@ -516,7 +550,7 @@ internal static class ModelStatsChecks
         BsonArray window = concurrent["recent_skip_outcomes"].AsArray;
         Check(concurrent["completed"].AsInt64 == 20 && window.Count == 20 && window.Count(outcome => outcome.AsBoolean) == 7,
             "Counters and the bounded window must be durable when the database is independently reopened.");
-        Check(rows.All(row => row.Keys.ToHashSet().SetEquals(new[] { "_id", "provider", "model", "revision", "completed", "errors", "latency_total_ms", "skip_completed", "skipped", "recent_skip_outcomes", "costed_completed", "cost_total", "costed_skip_completed", "costed_skipped", "skip_cost_total" })
+        Check(rows.All(row => row.Keys.ToHashSet().SetEquals(new[] { "_id", "provider", "model", "revision", "completed", "errors", "latency_total_ms", "skip_completed", "skipped", "recent_skip_outcomes", "costed_completed", "cost_total", "costed_skip_completed", "costed_skipped", "skip_cost_total", "response_cost_count", "response_cost_total", "skipped_cost_count", "skipped_cost_total" })
             && row["recent_skip_outcomes"].AsArray.All(outcome => outcome.IsBoolean)),
             "Only aggregate counters, costs, recent Boolean outcomes and reset revisions belong in model rows.");
     }

@@ -70,6 +70,8 @@ internal static class ModelStats
                 {
                     row["costed_completed"] = Count(row, "costed_completed") + 1;
                     AddCost(row, "cost_total", cost);
+                    row["response_cost_count"] = Count(row, "response_cost_count") + 1;
+                    AddCost(row, "response_cost_total", cost);
                 }
             }
             else
@@ -97,14 +99,7 @@ internal static class ModelStats
             JsonElement root = response.RootElement;
             if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("usage", out JsonElement usage)
                 || usage.ValueKind != JsonValueKind.Object) return null;
-            decimal? cost = null;
-            if (attempt.Provider == "openrouter" && usage.TryGetProperty("cost", out JsonElement amount)
-                && amount.ValueKind == JsonValueKind.Number && amount.TryGetDecimal(out decimal value) && value >= 0)
-            {
-                // A tiny nonzero charge outside decimal's range is unknown, never free.
-                string significand = amount.GetRawText().Split('e', 'E')[0];
-                if (value != 0 || !significand.Any(c => c >= '1' && c <= '9')) cost = value;
-            }
+            decimal? cost = ReportedCost(attempt.Provider, usage);
             BsonDocument record = new()
             {
                 ["_id"] = Guid.NewGuid().ToString("N"), ["model_key"] = attempt.Key,
@@ -135,6 +130,52 @@ internal static class ModelStats
         }
     }
 
+    private static decimal? ReportedCost(string provider, JsonElement usage)
+    {
+        if (provider != "openrouter" || usage.ValueKind != JsonValueKind.Object
+            || !usage.TryGetProperty("cost", out JsonElement amount) || amount.ValueKind != JsonValueKind.Number
+            || !amount.TryGetDecimal(out decimal value) || value < 0) return null;
+        // A tiny nonzero charge outside decimal's range is unknown, never free.
+        string significand = amount.GetRawText().Split('e', 'E')[0];
+        return value != 0 || !significand.Any(c => c >= '1' && c <= '9') ? value : null;
+    }
+
+    private static decimal? StoredCost(BsonDocument record)
+    {
+        if (!record["usage_json"].IsString) return null;
+        try
+        {
+            using JsonDocument usage = JsonDocument.Parse(record["usage_json"].AsString);
+            return ReportedCost(record["provider"].AsString, usage.RootElement);
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
+    private static void RebuildDollarCohorts(BsonDocument row, ILiteCollection<BsonDocument> records)
+    {
+        row["response_cost_count"] = row["skipped_cost_count"] = 0L;
+        row["response_cost_total"] = row["skipped_cost_total"] = 0m;
+        foreach (BsonDocument record in records.Find(Query.EQ("model_key", row["_id"])))
+        {
+            if (record["revision"].AsInt64 != row["revision"].AsInt64 || record["status"].AsString != "completed"
+                || StoredCost(record) is not decimal cost) continue;
+            string prefix = record["skipped"].IsBoolean && record["skipped"].AsBoolean ? "skipped" : "response";
+            row[$"{prefix}_cost_count"] = Count(row, $"{prefix}_cost_count") + 1;
+            AddCost(row, $"{prefix}_cost_total", cost);
+        }
+    }
+
+    private static bool EnsureDollarCohorts(BsonDocument row, ILiteCollection<BsonDocument> records)
+    {
+        if (row.ContainsKey("response_cost_count") && row.ContainsKey("response_cost_total")
+            && row.ContainsKey("skipped_cost_count") && row.ContainsKey("skipped_cost_total")) return false;
+        RebuildDollarCohorts(row, records);
+        return true;
+    }
+
     private static long Count(BsonDocument row, string field) => row[field].IsNull ? 0 : row[field].AsInt64;
     private static decimal Cost(BsonDocument row, string field) => row[field].IsNull ? 0m : row[field].AsDecimal;
     private static JToken ReadCost(BsonDocument row, string field) => row.ContainsKey(field) && row[field].IsNull
@@ -146,7 +187,12 @@ internal static class ModelStats
         if (row.ContainsKey(field) && row[field].IsNull) return;
         try
         {
-            row[field] = Cost(row, field) + cost;
+            decimal previous = Cost(row, field);
+            decimal total = previous + cost;
+            // Decimal can silently discard small charges at large magnitudes without overflowing.
+            // Preserve raw evidence and mark the total unavailable until its groups can be rebuilt.
+            row[field] = total - previous == cost && total - cost == previous
+                ? new BsonValue(total) : BsonValue.Null;
         }
         catch (OverflowException)
         {
@@ -179,6 +225,21 @@ internal static class ModelStats
                 receipt.Usage.Record["skipped"] = skipped;
                 records.Update(receipt.Usage.Record);
             }
+            if (skipped && receipt.Usage?.Cost is decimal skippedCost)
+            {
+                if (row["response_cost_total"].IsNull)
+                {
+                    // A previously overflowing combined total may fit once this response is separated.
+                    RebuildDollarCohorts(row, records);
+                }
+                else
+                {
+                    row["response_cost_count"] = Count(row, "response_cost_count") - 1;
+                    AddCost(row, "response_cost_total", -skippedCost);
+                    row["skipped_cost_count"] = Count(row, "skipped_cost_count") + 1;
+                    AddCost(row, "skipped_cost_total", skippedCost);
+                }
+            }
         }, requireCompletion: true);
     }
 
@@ -197,7 +258,9 @@ internal static class ModelStats
                     database.Rollback();
                     return false;
                 }
-                increment(row, database.GetCollection("usage"));
+                ILiteCollection<BsonDocument> records = database.GetCollection("usage");
+                EnsureDollarCohorts(row, records);
+                increment(row, records);
                 models.Upsert(row);
                 Commit(database);
                 return true;
@@ -216,7 +279,8 @@ internal static class ModelStats
         ["completed"] = 0L, ["errors"] = 0L, ["latency_total_ms"] = 0d, ["skip_completed"] = 0L, ["skipped"] = 0L,
         ["recent_skip_outcomes"] = new BsonArray(),
         ["costed_completed"] = 0L, ["cost_total"] = 0m,
-        ["costed_skip_completed"] = 0L, ["costed_skipped"] = 0L, ["skip_cost_total"] = 0m
+        ["costed_skip_completed"] = 0L, ["costed_skipped"] = 0L, ["skip_cost_total"] = 0m,
+        ["response_cost_count"] = 0L, ["response_cost_total"] = 0m, ["skipped_cost_count"] = 0L, ["skipped_cost_total"] = 0m
     };
 
     internal static JArray Read()
@@ -224,7 +288,10 @@ internal static class ModelStats
         lock (DatabaseLock)
         {
             using LiteDatabase database = Open(DatabasePath);
-            return Read(database.GetCollection("models"));
+            database.BeginTrans();
+            JArray stats = Read(database);
+            Commit(database);
+            return stats;
         }
     }
 
@@ -239,7 +306,7 @@ internal static class ModelStats
             long revision = models.FindById(key)?["revision"].AsInt64 ?? 0;
             models.Upsert(NewRow(key, provider, model, checked(revision + 1)));
             database.GetCollection("usage").DeleteMany(Query.EQ("model_key", key));
-            JArray stats = Read(models);
+            JArray stats = Read(database);
             Commit(database);
             return stats;
         }
@@ -250,20 +317,28 @@ internal static class ModelStats
         if (!database.Commit()) throw new InvalidOperationException("The model stats transaction did not commit.");
     }
 
-    private static JArray Read(ILiteCollection<BsonDocument> models) => new(models.FindAll().Select(row =>
+    private static JArray Read(LiteDatabase database)
     {
-        long completed = row["completed"].AsInt64;
-        BsonArray recent = row["recent_skip_outcomes"] as BsonArray;
-        return new JObject
+        ILiteCollection<BsonDocument> models = database.GetCollection("models");
+        ILiteCollection<BsonDocument> records = database.GetCollection("usage");
+        return new(models.FindAll().ToArray().Select(row =>
         {
-            ["provider"] = row["provider"].AsString, ["model"] = row["model"].AsString,
-            ["completed"] = completed, ["errors"] = row["errors"].AsInt64,
-            ["latency_ms"] = completed == 0 ? JValue.CreateNull() : new JValue(row["latency_total_ms"].AsDouble / completed),
-            ["skip_completed"] = row["skip_completed"].AsInt64, ["skipped"] = row["skipped"].AsInt64,
-            ["costed_completed"] = Count(row, "costed_completed"), ["cost_total"] = ReadCost(row, "cost_total"),
-            ["costed_skip_completed"] = Count(row, "costed_skip_completed"), ["costed_skipped"] = Count(row, "costed_skipped"),
-            ["skip_cost_total"] = ReadCost(row, "skip_cost_total"),
-            ["recent_skip_completed"] = recent?.Count ?? 0, ["recent_skipped"] = recent?.Count(outcome => outcome.AsBoolean) ?? 0
-        };
-    }));
+            if (EnsureDollarCohorts(row, records)) models.Update(row);
+            long completed = row["completed"].AsInt64;
+            BsonArray recent = row["recent_skip_outcomes"] as BsonArray;
+            return new JObject
+            {
+                ["provider"] = row["provider"].AsString, ["model"] = row["model"].AsString,
+                ["completed"] = completed, ["errors"] = row["errors"].AsInt64,
+                ["latency_ms"] = completed == 0 ? JValue.CreateNull() : new JValue(row["latency_total_ms"].AsDouble / completed),
+                ["skip_completed"] = row["skip_completed"].AsInt64, ["skipped"] = row["skipped"].AsInt64,
+                ["costed_completed"] = Count(row, "costed_completed"), ["cost_total"] = ReadCost(row, "cost_total"),
+                ["costed_skip_completed"] = Count(row, "costed_skip_completed"), ["costed_skipped"] = Count(row, "costed_skipped"),
+                ["skip_cost_total"] = ReadCost(row, "skip_cost_total"),
+                ["response_cost_count"] = Count(row, "response_cost_count"), ["response_cost_total"] = ReadCost(row, "response_cost_total"),
+                ["skipped_cost_count"] = Count(row, "skipped_cost_count"), ["skipped_cost_total"] = ReadCost(row, "skipped_cost_total"),
+                ["recent_skip_completed"] = recent?.Count ?? 0, ["recent_skipped"] = recent?.Count(outcome => outcome.AsBoolean) ?? 0
+            };
+        }));
+    }
 }

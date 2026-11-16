@@ -23,9 +23,9 @@ Alternatives considered: separate cost columns improve wide-screen scanning but 
 
 ## Metric definitions
 
-`Responses` is the number of completed fresh prompt responses with known costs divided by their summed costs in USD. It includes responses subsequently skipped. For example, 100 responses costing $0.20 imply an estimated 500 responses per $1.
+`Responses` is the number of completed non-skipped prompt responses with known costs divided by those non-skipped responses' summed charges in USD. Requests without Skip If checks belong here. A response initially counts here; if it later triggers Skip If, its count and charge move to the Skipped group atomically.
 
-Approved budget-based interpretation of `Skipped`: the count of skipped responses with known costs divided by the summed prompt charges for all cost-known responses with a resolved, qualifying Skip If outcome, including those that pass. For example, if all 100 responses above were evaluated and 20 were skipped, the estimate is 100 skipped responses per $1. This is not the inverse average charge of a skipped response. Responses without a resolved eligible Skip If outcome do not enter this metric's sample.
+`Skipped` is the number of skipped prompt responses with known costs divided by those skipped responses' summed charges in USD. Neither metric includes counts or costs from the opposite group. Example: two non-skipped responses costing $0.008 together give 250 Responses/$1; one skipped response costing $0.002 gives 500 Skipped/$1. An empty group shows unavailable, not free or zero estimated yield.
 
 Both metrics exclude cache reuse, failed requests, and image generation costs. Do not estimate charges from advertised model prices.
 
@@ -37,7 +37,7 @@ Capture usage at the actual provider-call boundary, once per fresh request, with
 
 Old records remain valid with no known costs. Old completed counts must not enter prompts-per-dollar calculations. Preserve existing exact-once Skip If receipts and reset revision protection, carrying the original response cost into its Skip If outcome. Reset clears the corresponding usage records and new aggregates alongside existing statistics.
 
-Other providers without a supported reported charge show unavailable costs. No historical backfill is required.
+Other providers without a supported reported charge show unavailable costs. On first read or update of an older model row, rebuild the separated cost groups from stored usage for its current reset revision, preserving all historical counters. This is a one-time cached migration; pre-cost history cannot be priced.
 
 ## Verification
 
@@ -45,4 +45,4 @@ Check raw usage persistence and precision, old-record compatibility, reported ze
 
 ## Approved implementation choices
 
-Retain latency beneath the model name and use the budget-based interpretation of skipped prompts per dollar above. No changes to how latency is measured. Very large finite estimates use compact/scientific notation. Unrepresentable cost totals display as unavailable while preserving raw usage and request/outcome counters.
+Retain latency beneath the model name and use the independent non-skipped and skipped cost groups above (superseding the earlier budget-yield calculation at the user’s request). No changes to how latency is measured. Very large finite estimates use compact/scientific notation. Unrepresentable cost totals display as unavailable while preserving raw usage and request/outcome counters.

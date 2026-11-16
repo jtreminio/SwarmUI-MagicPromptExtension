@@ -39,8 +39,8 @@ function mpStatsDollarLine(label, value) {
     const summary = value === null ? `${label} per $1 unavailable. No usable reported cost data.`
         : value === Infinity ? `${label}: no charge reported for the observed requests.`
         : label === 'Skipped'
-            ? `Estimated skipped responses per $1 of prompt spend, including evaluated responses that pass. Based on reported charges for resolved Skip If outcomes.`
-            : `Estimated completed responses per $1 of prompt spend, including skipped responses. Based on reported charges.`;
+            ? `Estimated skipped responses per $1, using only the charges for skipped responses.`
+            : `Estimated non-skipped responses per $1, using only the charges for non-skipped responses.`;
     line.title = summary;
     line.append(mpStatsElement('span', 'mp-stats-period', label), mpStatsElement('span', 'mp-stats-value', mpStatsDollarDisplay(value)),
         mpStatsElement('span', 'visually-hidden', summary));
@@ -106,8 +106,8 @@ function mpStatsSortRows(models, mode) {
             catalogGroup: !catalog ? 3 : model.provider === 'openaiapi' ? 1 : Number(catalog.row.created) > 0 ? 0 : 2,
             allTime: mpStatsRate(model.skipped, model.skip_completed),
             recent: mpStatsRate(model.recent_skipped, model.recent_skip_completed),
-            responsesPerDollar: mpStatsPerDollar(model.costed_completed, model.cost_total),
-            skippedPerDollar: mpStatsPerDollar(model.costed_skipped, model.skip_cost_total, model.costed_skip_completed),
+            responsesPerDollar: mpStatsPerDollar(model.response_cost_count, model.response_cost_total),
+            skippedPerDollar: mpStatsPerDollar(model.skipped_cost_count, model.skipped_cost_total),
             latency: Number.isFinite(model.latency_ms) ? model.latency_ms : null
         };
     });

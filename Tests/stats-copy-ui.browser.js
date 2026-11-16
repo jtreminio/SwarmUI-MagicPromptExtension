@@ -8,7 +8,7 @@ async page => {
         testStatsCatalogs.openrouter = [{ model: 'deepseek/deepseek-v4.1-flash-1017', name: 'DeepSeek: DeepSeek V4.1 Flash 1017', created: 1 }];
         testStats = [{ provider: 'openrouter', model: 'deepseek/deepseek-v4.1-flash-1017', completed: 10, errors: 0,
             latency_ms: 16000, skipped: 2, skip_completed: 10, recent_skipped: 2, recent_skip_completed: 10,
-            costed_completed: 1, cost_total: 1e-28, costed_skip_completed: 1, costed_skipped: 1, skip_cost_total: 1e-28 }];
+            response_cost_count: 1, response_cost_total: 1e-28, skipped_cost_count: 1, skipped_cost_total: 1e-28 }];
     });
     await page.getByRole('button', { name: 'Stats', exact: true }).click();
     const modal = page.getByRole('dialog', { name: 'Stats', exact: true });
