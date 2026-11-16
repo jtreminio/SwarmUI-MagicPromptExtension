@@ -103,13 +103,14 @@ function mpSettingsStatus(message, error = false) {
 
 function mpCurrentSettings() { return mpSettingsDraft || MP.settings; }
 function mpModelSelectOptionText(row, showUnits = true) {
-    if (row.decisionModel) {
+    if (row.decisionModel && showUnits) {
         const prices = [`${row.costIn || '—'} / 1M in`];
         if (row.costOut && row.costOut !== '$0') prices.push(`${row.costOut} / 1M out`);
         if (row.costRequest && row.costRequest !== '$0') prices.push(`${row.costRequest} / request`);
         return `${row.name || row.model} · ${prices.join(' · ')}`;
     }
-    return `${row.name || row.model}${row.costOut ? ` · ${row.costOut}${showUnits ? ' / 1M out' : ''}` : ''}`;
+    const price = row.decisionModel ? row.costIn?.trim() || '—' : row.costOut;
+    return `${row.name || row.model}${price ? ` · ${price}${showUnits ? ' / 1M out' : ''}` : ''}`;
 }
 function mpCatalogKey(settings) { return settings.catalogKey || `${settings.backend}\n${settings.backends[settings.backend]?.baseurl || ''}`; }
 function mpCatalog(settings = mpCurrentSettings()) { return MP.modelCatalogs?.[mpCatalogKey(settings)] || []; }
@@ -351,9 +352,10 @@ function mpFillModelSelect(select, settings, selected, preserveBlockedSelection 
         Number(favorites.has(key(b.model))) - Number(favorites.has(key(a.model))) ||
         mpCompareModelDates(a, b, backend));
     select.replaceChildren(new Option('Select a model', ''));
+    const showUnits = !['input_mpmodelid', 'input_mpdecisionmodelid', 'preset_input_mpdecisionmodelid'].includes(select.id);
     for (const row of rows) {
         if (blocked.has(key(row.model)) && row.model !== selected) continue;
-        const option = new Option(mpModelSelectOptionText(row, select.id !== 'input_mpmodelid'), row.model);
+        const option = new Option(mpModelSelectOptionText(row, showUnits), row.model);
         if (blocked.has(key(row.model))) option.dataset.blocked = '1';
         if (favorites.has(key(row.model))) option.dataset.favorited = '1';
         if (select.id === 'modelSelect' || select.id === 'mpDecisionModelSelect') {

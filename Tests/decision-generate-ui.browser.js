@@ -6,9 +6,12 @@ async page => {
     const trigger = page.locator('#mp_decision_model_dropdown_trigger');
     const menu = page.locator('#mp_decision_model_dropdown_popover');
     await trigger.click();
+    const requestPricedRow = menu.locator('.mp-model-dropdown-row-label').filter({ hasText: 'Parallel: Decision' });
+    check(await requestPricedRow.textContent() === 'Parallel: Decision · $0', 'Decision row should show only the input price in the prompt model format');
     await menu.locator('input').fill('typesafe/new');
     await menu.locator('.mp-model-dropdown-row').filter({ hasText: 'New decision' }).click();
     check(await page.locator('#input_mpdecisionmodelid').inputValue() === 'typesafe/new', 'Generate did not select decision model');
+    check(await trigger.textContent() === 'TypeSafe: New decision · $0.2', 'Decision trigger should show the selected model with compact input pricing');
     check(await page.evaluate(() => MP.settings.decisions.model === '' && MP.settings.model === 'google/model-a'), 'Generation override changed shared defaults');
     await trigger.click();
     await menu.locator('input').fill('typesafe/new');
@@ -47,6 +50,7 @@ async page => {
     await page.evaluate(() => new Promise(resolve => refreshParameterValues(true, null, resolve)));
     check(await page.locator('#input_mpdecisionmodelid').inputValue() === 'typesafe/old', 'Refresh lost Generate model override');
     check(await page.locator('#preset_input_mpdecisionmodelid').inputValue() === 'parallel/decision', 'Refresh overwrote independent preset model');
+    check(await page.locator('#preset_input_mpdecisionmodelid option:checked').textContent() === 'Parallel: Decision · $0', 'Preset decision model should use the same input price label');
     await page.evaluate(() => setDirectParamValue(gen_param_types[0], 'missing/old-judge', document.getElementById('preset_input_mpdecisionmodelid')));
     await page.evaluate(() => new Promise(resolve => refreshParameterValues(true, null, resolve)));
     check(await page.locator('#preset_input_mpdecisionmodelid').inputValue() === 'missing/old-judge', 'Refresh lost stale preset model');

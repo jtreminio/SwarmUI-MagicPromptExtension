@@ -60,15 +60,8 @@ public static class ModelListProvider
                 }
 
                 var name = m?["name"]?.ToString();
-                if (string.IsNullOrWhiteSpace(name))
-                {
-                    name = modelId;
-                }
-
                 string costOut = m?["costOut"]?.ToString();
-                string displayName = $"{name} ‧ {(string.IsNullOrWhiteSpace(costOut) ? "—" : costOut.Trim())}";
-
-                string entry = $"{modelId}///{displayName}";
+                string entry = $"{modelId}///{FormatModelLabel(modelId, name, costOut)}";
                 if (favoritedIds.Contains(modelId))
                 {
                     favorites.Add(entry);
@@ -133,6 +126,9 @@ public static class ModelListProvider
         return ids;
     }
 
+    private static string FormatModelLabel(string id, string name, string price) =>
+        $"{(string.IsNullOrWhiteSpace(name) ? id : name)} ‧ {(string.IsNullOrWhiteSpace(price) ? "—" : price.Trim())}";
+
     public static List<string> GetDecisionQuestions(Session session)
     {
         JObject settings = SessionSettings.GetMagicPromptSettings().GetAwaiter().GetResult()["settings"] as JObject;
@@ -179,10 +175,7 @@ public static class ModelListProvider
         {
             string id = (string)row["model"];
             string name = (string)row["name"];
-            List<string> prices = [$"{(string)row["costIn"] ?? "—"} / 1M in"];
-            if ((string)row["costOut"] is string output and not "$0") prices.Add($"{output} / 1M out");
-            if ((string)row["costRequest"] is string request and not "$0") prices.Add($"{request} / request");
-            options.Add($"{id}///{(string.IsNullOrWhiteSpace(name) ? id : name)} · {string.Join(" · ", prices)}");
+            options.Add($"{id}///{FormatModelLabel(id, name, (string)row["costIn"])}");
         }
         return options;
     }

@@ -194,13 +194,13 @@ internal static class OpenRouterDecisionChecks
         JArray models = JArray.Parse("""
             [{"model":"old","created":1},{"model":"favorite","created":2},
              {"model":"new","created":5},{"model":"blocked","created":6},
-             {"model":"new-favorite","name":"New favorite","created":3,"costIn":"$0.14","costOut":"$0","costRequest":"$0.001"},
+             {"model":"new-favorite","name":"New favorite","created":3,"costIn":"$0.14","costOut":"$1","costRequest":"$0.001"},
              {"model":"no-date","created":"unknown"}]
             """);
         List<string> options = ModelListProvider.FormatDecisionModelOptions(settings, models);
-        Check(options.SequenceEqual(new[] { "///Settings default", "new-favorite///New favorite · $0.14 / 1M in · $0.001 / request",
-            "favorite///favorite · — / 1M in", "new///new · — / 1M in", "old///old · — / 1M in", "no-date///no-date · — / 1M in" }),
-            "Generate should offer Settings default and unblocked decision models ordered by favorite and release date with pricing.");
+        Check(options.SequenceEqual(new[] { "///Settings default", "new-favorite///New favorite ‧ $0.14",
+            "favorite///favorite ‧ —", "new///new ‧ —", "old///old ‧ —", "no-date///no-date ‧ —" }),
+            "Generate should offer Settings default and unblocked decision models ordered by favorite and release date with compact input pricing.");
     }
 
     private static void RejectModel(Action action, params string[] expectedMessage)
