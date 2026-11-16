@@ -18,10 +18,8 @@ const MP_STATS_SORTS = {
 
 function mpStatsRate(matches, total) { return total > 0 ? matches / total : null; }
 
-function mpStatsPerDollar(count, cost, samples = count) {
-    if (!Number.isFinite(count) || count < 0 || !Number.isFinite(cost) || cost < 0
-        || !Number.isFinite(samples) || samples <= 0 || count > samples) return null;
-    if (count === 0) return 0;
+function mpStatsPerDollar(count, cost) {
+    if (!Number.isFinite(count) || count <= 0 || !Number.isFinite(cost) || cost < 0) return null;
     return cost === 0 ? Infinity : count / cost;
 }
 
@@ -169,8 +167,9 @@ function mpStatsSelectableModels(select) {
     return selectable;
 }
 
-function mpStatsTableRow(model, confirm, busy, canUse) {
+function mpStatsTableRow(model, confirm, busy, canUse, selected) {
     const row = document.createElement('tr');
+    row.classList.toggle('mp-stats-selected', selected);
     row.dataset.key = model.key;
     row.setAttribute('role', 'row');
     const heading = document.createElement('th');
@@ -182,6 +181,7 @@ function mpStatsTableRow(model, confirm, busy, canUse) {
     copy.title = `Copy ${model.model}`;
     copy.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true" focusable="false"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></svg>';
     nameLine.append(mpStatsElement('span', 'mp-stats-model', model.name), copy);
+    if (selected) nameLine.append(mpStatsElement('span', 'mp-stats-selected-badge', 'Selected in Generate'));
     heading.append(nameLine);
     const latency = Number.isFinite(model.latency_ms) ? `${Math.round(model.latency_ms / 1000)} s` : '—';
     heading.append(mpStatsElement('div', 'mp-stats-latency', `Avg response: ${latency}`));
@@ -199,7 +199,7 @@ function mpStatsTableRow(model, confirm, busy, canUse) {
         starButton.prepend(icon, ' ');
         controls.append(starButton);
     }
-    if (canUse) controls.append(mpStatsButton('use', 'Use', `Use ${name}`));
+    if (canUse && !selected) controls.append(mpStatsButton('use', 'Use', `Use ${name}`));
     if (canEdit) {
         const block = blocked ? 'Unblock' : 'Block';
         controls.append(mpStatsButton('block', block, `${block} ${name}`));
@@ -297,10 +297,10 @@ function mpCreateStats() {
     catch { /* Keep all sections expanded if browser storage is unavailable or invalid. */ }
 
     function renderStatus() {
-        status.classList.toggle('mp-status-error', !!(actionError || readError));
-        status.textContent = actionError || readError || (busy === 'reset' ? 'Resetting stats…'
+        status.classList.toggle('mp-status-error', !!(actionError || (!actionNotice && readError)));
+        status.textContent = actionError || actionNotice || readError || (busy === 'reset' ? 'Resetting stats…'
             : busy === 'preference' ? 'Saving model preferences…'
-                : loading ? 'Loading stats…' : loaded && !models.length ? 'No model stats yet.' : actionNotice);
+                : loading ? 'Loading stats…' : loaded && !models.length ? 'No model stats yet.' : '');
         refreshButton.setAttribute('aria-disabled', String(busy === 'reset'));
     }
 
@@ -311,7 +311,13 @@ function mpCreateStats() {
         const sorted = mpStatsSortRows(models, sort.value);
         rows = new Map(sorted.map(model => [model.key, model]));
         if (!rows.has(confirmation)) confirmation = null;
-        const selectable = mpStatsSelectableModels(document.getElementById('input_mpmodelid'));
+        const select = document.getElementById('input_mpmodelid');
+        const selectable = mpStatsSelectableModels(select);
+        // A blocked model can remain selected. Confirm its identity against the active catalog,
+        // since native options can still belong to a previous provider while catalogs load.
+        const selectedKey = MP.settingsLoaded && select?.value && select.value !== 'loading'
+            && mpCatalog(MP.settings).some(model => model.model === select.value)
+            ? JSON.stringify([MP.settings.backend, select.value]) : null;
         const grouped = MP_STATS_GROUPS.map(() => []);
         for (const model of sorted) grouped[model.group].push(model);
         const sections = [];
@@ -329,6 +335,9 @@ function mpCreateStats() {
             const label = MP_STATS_GROUPS[group];
             const collapsed = collapsedGroups.has(label);
             const toggle = mpStatsElement('button', 'mp-stats-group-toggle', label);
+            if (collapsed && members.some(model => model.key === selectedKey)) {
+                toggle.append(mpStatsElement('span', 'mp-stats-selected-badge', 'Contains selected model'));
+            }
             toggle.type = 'button';
             toggle.id = `mpStatsGroup${group}`;
             toggle.setAttribute('aria-expanded', String(!collapsed));
@@ -336,17 +345,16 @@ function mpCreateStats() {
                 const collapse = !collapsedGroups.has(label);
                 if (collapse) collapsedGroups.add(label);
                 else collapsedGroups.delete(label);
-                toggle.setAttribute('aria-expanded', String(!collapse));
-                for (const row of section.querySelectorAll('tr[data-key]')) row.hidden = collapse;
                 try { localStorage.setItem(MP_STATS_COLLAPSED_GROUPS_KEY, JSON.stringify([...collapsedGroups])); }
                 catch { /* The modal still remembers the choice in this page. */ }
+                render();
             });
             heading.append(toggle);
             divider.append(heading);
             section.append(divider);
             for (const model of members) {
                 const canUse = group !== 2 && model.provider === MP.settings.backend && selectable.has(model.model);
-                const row = mpStatsTableRow(model, model.key === confirmation, !!busy, canUse);
+                const row = mpStatsTableRow(model, model.key === confirmation, !!busy, canUse, model.key === selectedKey);
                 row.hidden = collapsed;
                 section.append(row);
                 elements.set(model.key, row);
@@ -477,6 +485,9 @@ function mpCreateStats() {
         }
     });
     sort.addEventListener('change', () => render());
+    document.addEventListener('change', event => {
+        if (event.target.id === 'input_mpmodelid' && modal.classList.contains('show')) render();
+    }, true); // SwarmUI's triggerChangeFor dispatches a non-bubbling change event.
     refreshButton.addEventListener('click', refresh);
     modal.addEventListener('show.bs.modal', refresh);
     modal.addEventListener('shown.bs.modal', () => {

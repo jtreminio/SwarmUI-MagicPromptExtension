@@ -18,7 +18,9 @@
 .mp-stats .mp-stats-group-toggle::before { content: ""; width: .45rem; height: .45rem; border-right: 2px solid; border-bottom: 2px solid; transform: rotate(-45deg); }
 .mp-stats .mp-stats-group-toggle[aria-expanded="true"]::before { transform: rotate(45deg); }
 .mp-stats .mp-stats-model { font-weight: 600; }
-.mp-stats .mp-stats-name { display: flex; align-items: center; gap: .25rem; }
+.mp-stats .mp-stats-name { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem; }
+.mp-stats .mp-stats-selected > th { box-shadow: inset 3px 0 color-mix(in srgb, var(--text) 55%, transparent); padding-inline-start: .7rem; }
+.mp-stats .mp-stats-selected-badge { display: inline-block; padding: .15rem .45rem; border-radius: 1rem; background: color-mix(in srgb, var(--text) 12%, var(--background)); color: var(--text); font-size: .7rem; font-weight: 500; }
 .mp-stats .mp-stats-model { min-width: 0; }
 .mp-stats .mp-stats-copy { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 28px; height: 28px; padding: .25rem; border: 0; border-radius: .25rem; background: transparent; color: var(--text-soft, var(--text)); cursor: pointer; }
 .mp-stats .mp-stats-copy svg { width: 15px; height: 15px; }

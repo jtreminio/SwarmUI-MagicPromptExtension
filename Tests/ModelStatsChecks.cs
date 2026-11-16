@@ -104,7 +104,7 @@ internal static class ModelStatsChecks
         await ReplyTo(listener, Send(baseUrl, model, provider: "openrouter"));
         JObject skipped = await Complete(usage);
         JToken row = Counts(await Read(), model, completed: 2, provider: "openrouter");
-        Check((long?)row["costed_completed"] == 1 && (decimal?)row["cost_total"] == 0.002m,
+        Check((long?)row["response_cost_count"] == 1 && (decimal?)row["response_cost_total"] == 0.002m,
             "A new reported charge must be recorded independently of historical completions.");
         JObject passed = await Complete("""{"cost":0.008,"prompt_tokens":11,"completion_tokens":10,"total_tokens":21}""");
         JObject free = await Complete("""{"cost":0,"prompt_tokens":1}""");
@@ -115,10 +115,6 @@ internal static class ModelStatsChecks
         ModelStats.RecordSkipIf(free, false);
         ModelStats.RecordSkipIf(unknown, true);
         row = Counts(await Read(), model, completed: 5, skipCompleted: 4, skipped: 2, provider: "openrouter");
-        Check((long?)row["costed_completed"] == 3 && (decimal?)row["cost_total"] == 0.01m
-            && (long?)row["costed_skip_completed"] == 3 && (long?)row["costed_skipped"] == 1
-            && (decimal?)row["skip_cost_total"] == 0.01m,
-            "Budget metrics must use known-cost cohorts, include passing response spend, and count receipts once.");
         Check((long?)row["response_cost_count"] == 2 && (decimal?)row["response_cost_total"] == 0.008m
             && (long?)row["skipped_cost_count"] == 1 && (decimal?)row["skipped_cost_total"] == 0.002m,
             "Non-skipped and skipped estimates must have disjoint counts and charges (250 versus 500 per dollar).");
@@ -160,6 +156,18 @@ internal static class ModelStatsChecks
                 "An invalid optional provider " + field + " must not discard usage or fail successful generation.");
         }
 
+        foreach (bool insideUsage in new[] { false, true })
+        {
+            string rawUsage = insideUsage ? usage[..^1] + ",\"\\uD800\":true}" : usage;
+            string malformed = Priced(rawUsage);
+            if (!insideUsage) malformed = malformed[..^1] + ",\"\\uD800\":true}";
+            string requested = "cost/property-name-" + insideUsage;
+            JObject result = await ReplyTo(listener, Send(baseUrl, requested, provider: "openrouter"), malformed);
+            Check((bool?)result["success"] == true && UsageRows(requested).Single()["usage_json"].AsString == rawUsage
+                && (decimal?)Counts(await Read(), requested, completed: 1, provider: "openrouter")["response_cost_total"] == 0.002m,
+                "An invalid unrelated property name must not fail generation or discard valid raw usage and cost.");
+        }
+
         // Unrepresentable totals are unknown; their raw records and successful outcomes still count.
         JObject[] overflow = new JObject[3];
         for (int i = 0; i < overflow.Length; i++)
@@ -168,8 +176,9 @@ internal static class ModelStatsChecks
             ModelStats.RecordSkipIf(overflow[i], i == 0);
         }
         JToken overflowRow = Counts(await Read(), "cost/overflow", completed: 3, skipCompleted: 3, skipped: 1, provider: "openrouter");
-        Check(overflowRow["cost_total"].Type == JTokenType.Null && overflowRow["skip_cost_total"].Type == JTokenType.Null
-            && UsageRows("cost/overflow").Length == 3 && (long?)overflowRow["costed_completed"] == 3,
+        Check(overflowRow["response_cost_total"].Type == JTokenType.Null
+            && (decimal?)overflowRow["skipped_cost_total"] == decimal.MaxValue
+            && UsageRows("cost/overflow").Length == 3 && (long?)overflowRow["response_cost_count"] == 2 && (long?)overflowRow["skipped_cost_count"] == 1,
             "Overflowing cost sums must become unavailable without dropping counters, raw usage or subsequent outcomes.");
 
         // Separate representable groups must survive temporary combined overflow or rounding.
@@ -193,32 +202,22 @@ internal static class ModelStatsChecks
             Check((bool?)result["success"] == true, "An invalid charge must not affect the generated prompt.");
         }
         JToken invalidRow = Counts(await Read(), "cost/invalid", completed: 6, provider: "openrouter");
-        Check((long?)invalidRow["costed_completed"] == 0 && UsageRows("cost/invalid").Length == 6,
+        Check((long?)invalidRow["response_cost_count"] == 0 && UsageRows("cost/invalid").Length == 6,
             "Invalid costs must remain raw evidence, without entering cost averages.");
         await Complete("""{"cost":0.1234567890123456789012345678,"prompt_tokens":2}""", false, "cost/precision");
-        Check((decimal?)(await Read()).Single(item => (string)item["model"] == "cost/precision")["cost_total"] == 0.1234567890123456789012345678m,
+        Check((decimal?)(await Read()).Single(item => (string)item["model"] == "cost/precision")["response_cost_total"] == 0.1234567890123456789012345678m,
             "Reported charges must not round through binary double precision.");
         await Complete("""{"cost":0.5,"prompt_tokens":2}""", false, "cost/local", Local);
-        Check((long?)(await Read()).Single(item => (string)item["model"] == "cost/local")["costed_completed"] == 0,
+        Check((long?)(await Read()).Single(item => (string)item["model"] == "cost/local")["response_cost_count"] == 0,
             "An unsupported provider must not be assumed to report USD charges.");
 
         // A billed response rejected by the parser retains usage, but is not a completed response.
         string truncated = Priced(usage).Replace("\"message\":", "\"finish_reason\":\"length\",\"message\":");
         JObject failed = await ReplyTo(listener, Send(baseUrl, "cost/failed", provider: "openrouter"), truncated);
-        Check(failed["error"] != null && (long?)Counts(await Read(), "cost/failed", errors: 1, provider: "openrouter")["costed_completed"] == 0
+        Check(failed["error"] != null && (long?)Counts(await Read(), "cost/failed", errors: 1, provider: "openrouter")["response_cost_count"] == 0
             && UsageRows("cost/failed").Single()["status"].AsString == "error",
             "Billed parser failures must retain raw usage without entering completed-response estimates.");
 
-        // Old model rows remain writable even with every new aggregate removed.
-        using (LiteDatabase database = new(Path.Combine(Program.DataDir, "MagicPrompt", "Stats.db")))
-        {
-            var models = database.GetCollection("models");
-            BsonDocument old = models.FindAll().Single(item => item["model"].AsString == model);
-            foreach (string field in new[] { "costed_completed", "cost_total", "costed_skip_completed", "costed_skipped", "skip_cost_total" }) old.Remove(field);
-            models.Update(old);
-        }
-        Check((long?)(await Read()).Single(item => (string)item["model"] == model)["costed_completed"] == 0,
-            "Legacy missing cost fields must read as an empty cost cohort.");
         JObject lateDecision = await Complete(usage);
         Task<JObject> pending = Send(baseUrl, model, decisionSource: true, provider: "openrouter");
         HttpListenerContext inflight = await Receive(listener);
@@ -227,10 +226,10 @@ internal static class ModelStatsChecks
         JObject lateResponse = await ReplyTo(inflight, pending, Priced(usage));
         ModelStats.RecordSkipIf(lateResponse, true);
         Check(UsageRows(model).Length == 0 && UsageRows("cost/precision").Length == 1
-            && (long?)Counts(await Read(), model, provider: "openrouter")["costed_completed"] == 0,
+            && (long?)Counts(await Read(), model, provider: "openrouter")["response_cost_count"] == 0,
             "Reset must clear only this model's usage and prevent late responses or decisions resurrecting it.");
         await Complete(usage, false);
-        Check((decimal?)Counts(await Read(), model, completed: 1, provider: "openrouter")["cost_total"] == 0.002m,
+        Check((decimal?)Counts(await Read(), model, completed: 1, provider: "openrouter")["response_cost_total"] == 0.002m,
             "A fresh post-reset request must start a new cost cohort.");
     }
 
@@ -550,7 +549,7 @@ internal static class ModelStatsChecks
         BsonArray window = concurrent["recent_skip_outcomes"].AsArray;
         Check(concurrent["completed"].AsInt64 == 20 && window.Count == 20 && window.Count(outcome => outcome.AsBoolean) == 7,
             "Counters and the bounded window must be durable when the database is independently reopened.");
-        Check(rows.All(row => row.Keys.ToHashSet().SetEquals(new[] { "_id", "provider", "model", "revision", "completed", "errors", "latency_total_ms", "skip_completed", "skipped", "recent_skip_outcomes", "costed_completed", "cost_total", "costed_skip_completed", "costed_skipped", "skip_cost_total", "response_cost_count", "response_cost_total", "skipped_cost_count", "skipped_cost_total" })
+        Check(rows.All(row => row.Keys.ToHashSet().SetEquals(new[] { "_id", "provider", "model", "revision", "completed", "errors", "latency_total_ms", "skip_completed", "skipped", "recent_skip_outcomes", "response_cost_count", "response_cost_total", "skipped_cost_count", "skipped_cost_total" })
             && row["recent_skip_outcomes"].AsArray.All(outcome => outcome.IsBoolean)),
             "Only aggregate counters, costs, recent Boolean outcomes and reset revisions belong in model rows.");
     }

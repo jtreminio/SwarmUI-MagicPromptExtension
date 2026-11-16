@@ -40,7 +40,7 @@ async page => {
     const table = modal.getByRole('table', { name: 'Model stats' });
     const rows = table.locator('tbody tr[data-key]');
     const groupHeadings = table.getByRole('rowheader').and(table.locator('th[scope="rowgroup"]'));
-    const groupToggle = name => table.getByRole('button', { name, exact: true });
+    const groupToggle = name => table.getByRole('button', { name: new RegExp('^' + name) });
     const model = id => rows.filter({ has: page.locator('th').getByText(id, { exact: true }) });
     const sort = modal.getByRole('combobox', { name: 'Sort' });
     const refresh = modal.getByRole('button', { name: 'Refresh', exact: true });
@@ -63,8 +63,11 @@ async page => {
     const geminiAlias = model('GOOGLE/MODEL-A');
     const older = rows.filter({ hasText: 'Older Model' });
     await waitForFocus(action(aurora, 'Star'));
+    check(await gemini.getByText('Selected in Generate', { exact: true }).isVisible()
+        && await table.locator('tr.mp-stats-selected').count() === 1
+        && await action(gemini, 'Use').count() === 0, 'The live selection must mark only the exact model and omit redundant Use');
     const matchOrder = async (expected, message) => {
-        const actual = await rows.locator('th > :first-child').allTextContents();
+        const actual = await rows.locator('.mp-stats-model').allTextContents();
         check(expected.every((value, index) => actual[index] === value), message + ': ' + actual.join(', '));
     };
     await matchOrder(['Gemini Flash', 'GOOGLE/MODEL-A', 'Zenith 14B', 'Aurora 70B', 'Atlas 32B', 'Zeta Local', 'Alpha Local'], 'Newest, catalog ties, local rank, or preference groups are wrong');
@@ -77,6 +80,7 @@ async page => {
     const blockedToggle = groupToggle('Blocked');
     check(await starredToggle.getAttribute('aria-expanded', { timeout: 2000 }) === 'true', 'Sections should start expanded');
     await starredToggle.click();
+    check(await starredToggle.getByText('Contains selected model', { exact: true }).isVisible(), 'Collapsed group hides the current selection');
     await blockedToggle.press('Space');
     check(await starredToggle.getAttribute('aria-expanded') === 'false' && !await gemini.isVisible()
         && await blockedToggle.getAttribute('aria-expanded') === 'false' && !await older.isVisible()
@@ -89,6 +93,7 @@ async page => {
         && await blockedToggle.getAttribute('aria-expanded') === 'false' && !await gemini.isVisible()
         && !await older.isVisible(), 'Reopening Stats should retain collapsed sections');
     await starredToggle.press('Enter');
+    check(await starredToggle.getByText('Contains selected model', { exact: true }).count() === 0, 'Expanded groups should not repeat the selection notice');
     await blockedToggle.click();
     check(await gemini.isVisible() && await older.isVisible(), 'Expanding a section should restore its rows');
     check(await table.getByRole('columnheader', { name: 'Completed requests' }).textContent() === '#', 'Completed count header is not #');
@@ -133,10 +138,8 @@ async page => {
         return gap >= 0 && gap < 10;
     });
     check(await errorLabelFollowsTrack(), 'Error percentage is visually separated from its track');
-    for (const row of [aurora, gemini]) {
-        const order = await row.locator('.mp-stats-actions button').evaluateAll(buttons => buttons.map(button => button.dataset.action));
-        check(order.slice(0, 2).join(',') === 'star,use', 'Star or Unstar should come before Use');
-    }
+    const order = await aurora.locator('.mp-stats-actions button').evaluateAll(buttons => buttons.map(button => button.dataset.action));
+    check(order.slice(0, 2).join(',') === 'star,use', 'Star or Unstar should come before Use');
     check(await action(older, 'Unblock').isVisible() && await older.locator('button[data-action="star"]').count() === 0,
         'A blocked model should offer Unblock and hide the star action');
     check(await action(older, 'Use').count() === 0 && await action(zeta, 'Use').count() === 0
@@ -173,6 +176,19 @@ async page => {
         'Use must update the live Generate selection through its change event without saving settings or changing the preset');
     await opener.click();
     await aurora.waitFor();
+    check(await atlas.getByText('Selected in Generate', { exact: true }).isVisible()
+        && await action(gemini, 'Use').isVisible(), 'Reopening Stats must reflect Use, independently of default and preset selections');
+    await page.evaluate(() => {
+        const select = document.getElementById('input_mpmodelid');
+        select.value = 'newest';
+        triggerChangeFor(select);
+    });
+    check(await aurora.getByText('Selected in Generate', { exact: true }).isVisible(), 'Live Generate changes must update the marker');
+    await page.evaluate(() => {
+        const select = document.getElementById('input_mpmodelid');
+        select.value = 'older';
+        triggerChangeFor(select);
+    });
 
     for (const [label, expected] of [
         ['All-time Skip If, low to high', ['Zenith 14B', 'Aurora 70B', 'Atlas 32B', 'unknown/z']],
@@ -216,6 +232,13 @@ async page => {
     }), 'The closed sort control truncates its selected label');
     await sort.selectOption({ label: 'Newest model added' });
     await page.setViewportSize({ width: 1440, height: 900 });
+
+    await action(atlas, 'Block').click();
+    await action(atlas, 'Unblock').waitFor();
+    check(await atlas.getByText('Selected in Generate', { exact: true }).isVisible()
+        && await page.locator('#input_mpmodelid').inputValue() === 'older', 'A blocked model that remains selected must retain its marker');
+    await action(atlas, 'Unblock').click();
+    await action(atlas, 'Block').waitFor();
 
     await page.evaluate(() => { testSettings.favoritedModels.openrouter.push('another-tabs-favorite'); });
     await action(aurora, 'Star').click();
@@ -324,6 +347,7 @@ async page => {
     await model('local/a').waitFor();
     await page.waitForFunction(() => MP.settings.backend === 'openaiapi');
     check(await action(model('local/model-b'), 'Use').count() === 0, 'Use offered an option left over from the previous provider');
+    check(await table.locator('.mp-stats-selected').count() === 0, 'A pending catalog must not mark stale provider options as selected');
     await page.evaluate(() => releaseLocal());
     check(await action(model('local/a'), 'Star').isVisible(), 'Catalog failure hid rows or actions');
     check((await groupHeadings.allTextContents()).join(', ') === 'Unstarred', 'Empty preference groups display headings');

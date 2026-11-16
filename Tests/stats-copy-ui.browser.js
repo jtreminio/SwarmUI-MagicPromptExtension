@@ -25,7 +25,8 @@ async page => {
     await page.keyboard.press('Enter');
     check(await copy.evaluate(el => el === document.activeElement), 'Keyboard copy lost focus');
 
-    await page.evaluate(() => {
+    await page.evaluate(async () => {
+        await navigator.clipboard.writeText('Before fallback copy');
         window.statsClipboard = navigator.clipboard;
         Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
     });
@@ -39,6 +40,12 @@ async page => {
     await modal.getByRole('status').filter({ hasText: 'Could not copy model codename: Clipboard denied' }).waitFor();
     check(await row.getByText('DeepSeek: DeepSeek V4.1 Flash 1017', { exact: true }).isVisible(), 'Clipboard failure hid the model');
     await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: statsClipboard }));
+    await page.evaluate(() => {
+        const select = document.getElementById('input_mpmodelid');
+        select.value = 'deepseek/deepseek-v4.1-flash-1017';
+        triggerChangeFor(select);
+    });
+    check(await row.getByText('Selected in Generate', { exact: true }).isVisible(), 'Long model name must retain its selection badge');
 
     for (const width of [320, 390, 801, 1440]) {
         await page.setViewportSize({ width, height: 900 });
@@ -50,6 +57,13 @@ async page => {
         check(await row.locator('.mp-stats-cost').getByText('1E28', { exact: true }).count() === 2,
             'Very large estimates must stay finite and compact');
     }
+    await page.evaluate(() => { testStatsFailures.read = 'Fixture refresh failed'; });
+    await modal.getByRole('button', { name: 'Refresh', exact: true }).click();
+    await modal.getByRole('status').filter({ hasText: 'Could not load stats: Fixture refresh failed' }).waitFor();
+    await copy.click();
+    await modal.getByRole('status').filter({ hasText: 'Copied model codename.' }).waitFor();
+    check(!await modal.getByRole('status').evaluate(el => el.classList.contains('mp-status-error')),
+        'A successful copy must show confirmation even when the last Stats refresh failed');
     await modal.getByRole('button', { name: 'Close', exact: true }).click();
     return 'Hidden codenames, exact clipboard copy, keyboard/fallback/denied clipboard and extreme-value layout passed';
 }

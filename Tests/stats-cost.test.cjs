@@ -17,7 +17,6 @@ function setup() {
 test('dollar estimates separate non-skipped and skipped counts and spend', () => {
     const ctx = setup();
     const model = { provider: 'openrouter', model: 'paid', completed: 1000, skipped: 90, skip_completed: 900,
-        costed_completed: 100, cost_total: 0.2, costed_skip_completed: 50, costed_skipped: 10, skip_cost_total: 0.1,
         response_cost_count: 90, response_cost_total: 0.18, skipped_cost_count: 10, skipped_cost_total: 0.02 };
     const [row] = ctx.mpStatsSortRows([model], 'newest');
     assert.equal(row.responsesPerDollar, 500);
@@ -34,11 +33,11 @@ test('dollar estimates separate non-skipped and skipped counts and spend', () =>
 
 test('unknown, free, no observed skips and tiny positive estimates stay distinct', () => {
     const ctx = setup();
-    for (const [count, cost, samples, expected] of [
-        [undefined, undefined, undefined, null], [0, 0, 0, null], [1, null, 1, null],
-        [1, -1, 1, null], [1, Infinity, 1, null], [1, 0, 1, Infinity],
-        [0, 0.2, 10, 0], [0, 0, 10, 0], [1, 4, 2, 0.25], [3, 0.01, 3, 300]
-    ]) assert.equal(ctx.mpStatsPerDollar(count, cost, samples), expected);
+    for (const [count, cost, expected] of [
+        [undefined, undefined, null], [0, 0, null], [1, null, null],
+        [1, -1, null], [1, Infinity, null], [1, 0, Infinity],
+        [0, 0.2, null], [-1, 0.2, null], [1, 4, 0.25], [3, 0.01, 300]
+    ]) assert.equal(ctx.mpStatsPerDollar(count, cost), expected);
     assert.equal(ctx.mpStatsDollarDisplay(null), '—');
     assert.equal(ctx.mpStatsDollarDisplay(Infinity), 'Free');
     assert.equal(ctx.mpStatsDollarDisplay(0), '0');

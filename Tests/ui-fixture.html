@@ -23,7 +23,7 @@ window.refreshParameterValues=(strong,type,callback)=>setTimeout(()=>{
 },20);
 window.promptTabComplete={prefixes:{},getPossibleList(){},registerPrefix(){}};
 window.registerMediaButton=()=>{};
-window.triggerChangeFor=el=>el.dispatchEvent(new Event('change',{bubbles:true}));
+window.triggerChangeFor=el=>el.dispatchEvent(new Event('change'));
 window.createDiv=(id,cls,html="")=>{let e=document.createElement('div');e.id=id;e.className=cls;e.innerHTML=html;return e};
 window.escapeHtmlNoBr=text=>String(text).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 window.showError=text=>{window.testErrors.push(text)};window.testErrors=[];
@@ -69,7 +69,7 @@ window.genericRequest=(route,payload,done,depth,fail)=>{
  if(route==='ResetMagicPromptStats'){
   if(testStatsFailures.reset)return fail(testStatsFailures.reset);
   const row=testStats.find(row=>row.provider===payload.provider && row.model===payload.model);
-  Object.assign(row,{completed:0,errors:0,latency_ms:null,skipped:0,skip_completed:0,recent_skipped:0,recent_skip_completed:0,costed_completed:0,cost_total:0,costed_skip_completed:0,costed_skipped:0,skip_cost_total:0,response_cost_count:0,response_cost_total:0,skipped_cost_count:0,skipped_cost_total:0});
+  Object.assign(row,{completed:0,errors:0,latency_ms:null,skipped:0,skip_completed:0,recent_skipped:0,recent_skip_completed:0,response_cost_count:0,response_cost_total:0,skipped_cost_count:0,skipped_cost_total:0});
   return done({success:true,models:structuredClone(testStats)});
  }
  if(route==='SaveMagicPromptSettings'){

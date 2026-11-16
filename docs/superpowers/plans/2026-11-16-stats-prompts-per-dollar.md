@@ -15,7 +15,7 @@
 - Retain raw reported usage, not prompt/response text; exclude evaluator calls.
 - Keep latency, old counts, groups and controls; no reset needed.
 - Display only Responses and Skipped under Prompts for $1; no coverage or cumulative spend.
-- Use decimal charges and independent known-cost denominators; skipped denominator includes eligible passes.
+- Use decimal charges and disjoint known-cost groups: Responses excludes skipped requests; Skipped excludes non-skipped requests.
 - Preserve reset revisions and exactly-once outcome attribution.
 
 ## Review Focus
@@ -29,7 +29,7 @@
 ### Task 1: Persist usage and cost cohorts
 
 **Files:** `ModelStats.cs`, `Tests/ModelStatsChecks.cs`.
-**Interfaces:** Extend `CompleteAttempt(Attempt, double?, JObject, string responseJson = null)`; Read adds `costed_completed`, `cost_total`, `costed_skip_completed`, `costed_skipped`, `skip_cost_total`. `usage` collection retains raw usage JSON and request identity/outcome; no API exposes raw records.
+**Interfaces:** Extend `CompleteAttempt(Attempt, double?, JObject, string responseJson)`; Read adds `response_cost_count`, `response_cost_total`, `skipped_cost_count`, `skipped_cost_total`. `usage` collection retains raw usage JSON and request identity/outcome; no API exposes raw records.
 
 - [x] Add offline checks for old rows, raw precision, known/missing/zero/invalid costs, separate skip cohorts, duplicate outcomes, resets and failed calls.
 - [x] Run `dotnet run --project Tests/PromptTags.csproj`; confirm the new assertions fail before implementation.
@@ -49,7 +49,7 @@
 ### Task 3: Display and verify the compact metrics
 
 **Files:** `Assets/stats.js`, `Assets/stats.css`, `Tests/stats-cost.test.cjs`, `Tests/stats-ui.browser.js`, `Tests/ui-fixture.html`, `Tests/README.md`.
-**Interfaces:** Consume Task 1's independent cost cohorts. Responses/count divided by sum; skips divided by eligible response sum. Unknown = dash, zero-charge cohort = Free, positive fraction below 1 = <1.
+**Interfaces:** Consume Task 1's independent cost cohorts. Each group’s known-cost count divided by its own charge total. Unknown = dash, zero-charge cohort = Free, positive fraction below 1 = <1.
 
 - [x] Add real helper tests for ratios, formatting and sorts; extend browser fixture to check displayed numbers, latency and reset behavior.
 - [x] Run `node --test Tests/*.test.cjs`; observe missing metric behavior.
@@ -78,3 +78,12 @@
 
 - Verification: C# and frontend regressions first failed with the old overlapping definitions (`/tmp/mp-cohorts-red.log`, `/tmp/mp-cohorts-ui-red.log`). New independent formulas and existing-usage migration pass C# checks (`/tmp/mp-cohorts-final.log`), 37 frontend tests (`/tmp/mp-cohorts-ui-green.log`) and Stats/clipboard browser checks (`/tmp/mp-cohorts-browser.log`, `/tmp/mp-cohorts-copy.log`).
 - Fresh review identified silent decimal precision loss when a very large charge is later removed. Regression failed (`/tmp/mp-cohorts-precision-red.log`); AddCost now marks inexact sums unavailable using arithmetic round-trip checks, allowing the existing raw-usage rebuild to recover separate exact totals. Final C# suite passes. No remaining review findings.
+
+## Selected model and branch review
+
+- UX review recommends a `Selected in Generate` badge beside the human name/copy action, subtle first-cell accent, and `Contains selected model` on its collapsed group. Preserve row order and remove redundant Use only for the current row.
+- Resolve identity from the live Generate dropdown and active provider catalog, retaining the marker for a blocked selection and suppressing unverified stale options. Capture native changes so SwarmUI’s non-bubbling programmatic events update the open modal.
+- Whole-branch code/minimalism reviews removed the unused earlier overlapping aggregates and simplified the per-dollar helper; raw usage and migration remain intact.
+- Review also fixed copy confirmation being hidden by a prior refresh error and strengthened the clipboard fallback check with a distinct starting value.
+- A further HTTP regression exposed malformed UTF-16 property names accepted by the prompt parser but rejected by optional usage lookups. Field enumeration now isolates malformed names while retaining valid cost/raw usage and last-property-wins behavior (`/tmp/mp-selected-property-red.log` → `/tmp/mp-selected-property-green.log`).
+- Verification: the non-bubbling selection regression failed before the listener fix (`/tmp/mp-selected-event-red.log`) and passes afterward. Final C# suite passes (272 parser checks plus storage/transport/decision suites), Node passes 37 tests, and Stats, preferences, and clipboard browser checks pass at desktop and mobile widths. No live settings or stats were changed.

@@ -56,6 +56,8 @@ Picker review checks cover keyboard model selection and default recovery, visibl
 
 Stats browser checks cover catalog ordering and independent loading, both Skip If windows and sort directions, unavailable versus zero metrics, prompt preference persistence and failures, reset permission and stale refreshes, keyboard focus, and narrow-screen layout.
 
+The selected-model marker follows the live Generate dropdown (including SwarmUI's non-bubbling change events), keeps exact provider/model identity, survives blocking the selected model, and remains discoverable in collapsed groups without changing sort order.
+
 Cost checks also cover raw usage precision, missing/invalid/free charges, historical compatibility, known-cost response and Skip If cohorts, billed parser failures, concurrent usage, cache reuse, and reset races. Frontend checks verify prompts per dollar, unknown/free/zero displays, cost and response-time sorts, latency placement, and responsive Stats layout. All provider responses are offline fixtures; no paid inference is used.
 
 Stats copy checks exercise the real clipboard, keyboard activation, the HTTP fallback inside the modal focus trap, clipboard denial, and very large finite estimates at mobile and desktop widths. Accounting regressions cover invalid optional UTF-16 metadata and decimal aggregate overflow without losing successful requests or raw usage.

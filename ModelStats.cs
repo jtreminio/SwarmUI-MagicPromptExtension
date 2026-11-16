@@ -56,7 +56,7 @@ internal static class ModelStats
         }
     }
 
-    internal static void CompleteAttempt(Attempt attempt, double? latencyMs, JObject fetched, string responseJson = null)
+    internal static void CompleteAttempt(Attempt attempt, double? latencyMs, JObject fetched, string responseJson)
     {
         if (attempt == null) return;
         Usage usage = CaptureUsage(attempt, responseJson, latencyMs.HasValue);
@@ -68,8 +68,6 @@ internal static class ModelStats
                 row["latency_total_ms"] = row["latency_total_ms"].AsDouble + latency;
                 if (usage?.Cost is decimal cost)
                 {
-                    row["costed_completed"] = Count(row, "costed_completed") + 1;
-                    AddCost(row, "cost_total", cost);
                     row["response_cost_count"] = Count(row, "response_cost_count") + 1;
                     AddCost(row, "response_cost_total", cost);
                 }
@@ -97,8 +95,8 @@ internal static class ModelStats
         {
             using JsonDocument response = JsonDocument.Parse(responseJson);
             JsonElement root = response.RootElement;
-            if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("usage", out JsonElement usage)
-                || usage.ValueKind != JsonValueKind.Object) return null;
+            JsonElement usage = ResponseField(root, "usage");
+            if (usage.ValueKind != JsonValueKind.Object) return null;
             decimal? cost = ReportedCost(attempt.Provider, usage);
             BsonDocument record = new()
             {
@@ -113,7 +111,8 @@ internal static class ModelStats
                 record[target] = BsonValue.Null;
                 try
                 {
-                    if (root.TryGetProperty(source, out JsonElement field) && field.ValueKind == JsonValueKind.String)
+                    JsonElement field = ResponseField(root, source);
+                    if (field.ValueKind == JsonValueKind.String)
                         record[target] = new BsonValue(field.GetString());
                 }
                 catch (InvalidOperationException)
@@ -130,10 +129,30 @@ internal static class ModelStats
         }
     }
 
+    private static JsonElement ResponseField(JsonElement source, string name)
+    {
+        JsonElement result = default;
+        if (source.ValueKind != JsonValueKind.Object) return result;
+        foreach (JsonProperty property in source.EnumerateObject())
+        {
+            try
+            {
+                // Preserve last-property-wins behavior without decoding unrelated malformed names.
+                if (property.NameEquals(name)) result = property.Value;
+            }
+            catch (InvalidOperationException)
+            {
+                // An invalid optional property name must not hide usable fields or fail generation.
+            }
+        }
+        return result;
+    }
+
     private static decimal? ReportedCost(string provider, JsonElement usage)
     {
-        if (provider != "openrouter" || usage.ValueKind != JsonValueKind.Object
-            || !usage.TryGetProperty("cost", out JsonElement amount) || amount.ValueKind != JsonValueKind.Number
+        if (provider != "openrouter") return null;
+        JsonElement amount = ResponseField(usage, "cost");
+        if (amount.ValueKind != JsonValueKind.Number
             || !amount.TryGetDecimal(out decimal value) || value < 0) return null;
         // A tiny nonzero charge outside decimal's range is unknown, never free.
         string significand = amount.GetRawText().Split('e', 'E')[0];
@@ -214,12 +233,6 @@ internal static class ModelStats
             recent.Add(skipped);
             if (recent.Count > RecentSkipLimit) recent.RemoveAt(0);
             row["recent_skip_outcomes"] = recent;
-            if (receipt.Usage?.Cost is decimal cost)
-            {
-                row["costed_skip_completed"] = Count(row, "costed_skip_completed") + 1;
-                AddCost(row, "skip_cost_total", cost);
-                if (skipped) row["costed_skipped"] = Count(row, "costed_skipped") + 1;
-            }
             if (receipt.Usage != null)
             {
                 receipt.Usage.Record["skipped"] = skipped;
@@ -278,8 +291,6 @@ internal static class ModelStats
         ["_id"] = key, ["provider"] = provider, ["model"] = model, ["revision"] = revision,
         ["completed"] = 0L, ["errors"] = 0L, ["latency_total_ms"] = 0d, ["skip_completed"] = 0L, ["skipped"] = 0L,
         ["recent_skip_outcomes"] = new BsonArray(),
-        ["costed_completed"] = 0L, ["cost_total"] = 0m,
-        ["costed_skip_completed"] = 0L, ["costed_skipped"] = 0L, ["skip_cost_total"] = 0m,
         ["response_cost_count"] = 0L, ["response_cost_total"] = 0m, ["skipped_cost_count"] = 0L, ["skipped_cost_total"] = 0m
     };
 
@@ -332,9 +343,6 @@ internal static class ModelStats
                 ["completed"] = completed, ["errors"] = row["errors"].AsInt64,
                 ["latency_ms"] = completed == 0 ? JValue.CreateNull() : new JValue(row["latency_total_ms"].AsDouble / completed),
                 ["skip_completed"] = row["skip_completed"].AsInt64, ["skipped"] = row["skipped"].AsInt64,
-                ["costed_completed"] = Count(row, "costed_completed"), ["cost_total"] = ReadCost(row, "cost_total"),
-                ["costed_skip_completed"] = Count(row, "costed_skip_completed"), ["costed_skipped"] = Count(row, "costed_skipped"),
-                ["skip_cost_total"] = ReadCost(row, "skip_cost_total"),
                 ["response_cost_count"] = Count(row, "response_cost_count"), ["response_cost_total"] = ReadCost(row, "response_cost_total"),
                 ["skipped_cost_count"] = Count(row, "skipped_cost_count"), ["skipped_cost_total"] = ReadCost(row, "skipped_cost_total"),
                 ["recent_skip_completed"] = recent?.Count ?? 0, ["recent_skipped"] = recent?.Count(outcome => outcome.AsBoolean) ?? 0
