@@ -129,6 +129,29 @@ internal static class ModelStatsChecks
         Check(records.All(record => !record.ToString().Contains("Test provider prompt") && !record.ToString().Contains("Test request secret")),
             "Usage storage must not include prompt or response text.");
 
+        // Optional metadata must not make the accounting in finally override a successful prompt.
+        foreach (string field in new[] { "id", "model" })
+        {
+            string malformed = field == "id"
+                ? Priced(usage).Replace("gen-fixture", @"\uD800")
+                : Priced(usage).Replace("routed-cost-model", @"\uD800");
+            JObject result = await ReplyTo(listener, Send(baseUrl, "cost/metadata-" + field, provider: "openrouter"), malformed);
+            Check((bool?)result["success"] == true && UsageRows("cost/metadata-" + field).Single()["usage_json"].AsString == usage,
+                "An invalid optional provider " + field + " must not discard usage or fail successful generation.");
+        }
+
+        // Unrepresentable totals are unknown; their raw records and successful outcomes still count.
+        JObject[] overflow = new JObject[3];
+        for (int i = 0; i < overflow.Length; i++)
+        {
+            overflow[i] = await Complete("{\"cost\":" + decimal.MaxValue.ToString(System.Globalization.CultureInfo.InvariantCulture) + "}", requested: "cost/overflow");
+            ModelStats.RecordSkipIf(overflow[i], i == 0);
+        }
+        JToken overflowRow = Counts(await Read(), "cost/overflow", completed: 3, skipCompleted: 3, skipped: 1, provider: "openrouter");
+        Check(overflowRow["cost_total"].Type == JTokenType.Null && overflowRow["skip_cost_total"].Type == JTokenType.Null
+            && UsageRows("cost/overflow").Length == 3 && (long?)overflowRow["costed_completed"] == 3,
+            "Overflowing cost sums must become unavailable without dropping counters, raw usage or subsequent outcomes.");
+
         // Optional and malformed charges must not break prompt generation or appear free.
         foreach (string invalid in new[] { "null", "-1", "\"0.01\"", "1e100", "1e-100", "true" })
         {

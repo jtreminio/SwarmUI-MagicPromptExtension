@@ -69,7 +69,7 @@ internal static class ModelStats
                 if (usage?.Cost is decimal cost)
                 {
                     row["costed_completed"] = Count(row, "costed_completed") + 1;
-                    row["cost_total"] = Cost(row, "cost_total") + cost;
+                    AddCost(row, "cost_total", cost);
                 }
             }
             else
@@ -114,8 +114,19 @@ internal static class ModelStats
                 ["usage_json"] = usage.GetRawText()
             };
             foreach ((string source, string target) in new[] { ("id", "provider_request_id"), ("model", "reported_model") })
-                record[target] = root.TryGetProperty(source, out JsonElement field) && field.ValueKind == JsonValueKind.String
-                    ? new BsonValue(field.GetString()) : BsonValue.Null;
+            {
+                record[target] = BsonValue.Null;
+                try
+                {
+                    if (root.TryGetProperty(source, out JsonElement field) && field.ValueKind == JsonValueKind.String)
+                        record[target] = new BsonValue(field.GetString());
+                }
+                catch (InvalidOperationException)
+                {
+                    // System.Text.Json rejects incomplete UTF-16 even when the prompt parser accepts it.
+                    // Optional response identity must never discard valid usage or fail generation.
+                }
+            }
             return new Usage(record, cost);
         }
         catch (JsonException)
@@ -126,6 +137,23 @@ internal static class ModelStats
 
     private static long Count(BsonDocument row, string field) => row[field].IsNull ? 0 : row[field].AsInt64;
     private static decimal Cost(BsonDocument row, string field) => row[field].IsNull ? 0m : row[field].AsDecimal;
+    private static JToken ReadCost(BsonDocument row, string field) => row.ContainsKey(field) && row[field].IsNull
+        ? JValue.CreateNull() : new JValue(Cost(row, field));
+
+    private static void AddCost(BsonDocument row, string field, decimal cost)
+    {
+        // Missing fields are legacy zeros; an explicit null is an unrepresentable total.
+        if (row.ContainsKey(field) && row[field].IsNull) return;
+        try
+        {
+            row[field] = Cost(row, field) + cost;
+        }
+        catch (OverflowException)
+        {
+            // Keep the request, raw usage and outcome even if the displayed estimate is unavailable.
+            row[field] = BsonValue.Null;
+        }
+    }
 
     internal static void RecordSkipIf(JObject fetched, bool skipped)
     {
@@ -143,7 +171,7 @@ internal static class ModelStats
             if (receipt.Usage?.Cost is decimal cost)
             {
                 row["costed_skip_completed"] = Count(row, "costed_skip_completed") + 1;
-                row["skip_cost_total"] = Cost(row, "skip_cost_total") + cost;
+                AddCost(row, "skip_cost_total", cost);
                 if (skipped) row["costed_skipped"] = Count(row, "costed_skipped") + 1;
             }
             if (receipt.Usage != null)
@@ -232,9 +260,9 @@ internal static class ModelStats
             ["completed"] = completed, ["errors"] = row["errors"].AsInt64,
             ["latency_ms"] = completed == 0 ? JValue.CreateNull() : new JValue(row["latency_total_ms"].AsDouble / completed),
             ["skip_completed"] = row["skip_completed"].AsInt64, ["skipped"] = row["skipped"].AsInt64,
-            ["costed_completed"] = Count(row, "costed_completed"), ["cost_total"] = Cost(row, "cost_total"),
+            ["costed_completed"] = Count(row, "costed_completed"), ["cost_total"] = ReadCost(row, "cost_total"),
             ["costed_skip_completed"] = Count(row, "costed_skip_completed"), ["costed_skipped"] = Count(row, "costed_skipped"),
-            ["skip_cost_total"] = Cost(row, "skip_cost_total"),
+            ["skip_cost_total"] = ReadCost(row, "skip_cost_total"),
             ["recent_skip_completed"] = recent?.Count ?? 0, ["recent_skipped"] = recent?.Count(outcome => outcome.AsBoolean) ?? 0
         };
     }));

@@ -55,7 +55,7 @@
 - [x] Run `node --test Tests/*.test.cjs`; observe missing metric behavior.
 - [x] Replace latency column with the two-line metric; move latency below model identity; add cost and latency sorts.
 - [x] Run Node suite, C# suite, and Stats browser/preference checks at desktop and narrow widths; inspect screenshots and commit.
-- [ ] Request fresh code review, resolve material findings and verify before completion.
+- [x] Request fresh code review, resolve material findings and verify before completion.
 
 ## Execution record
 
@@ -64,3 +64,7 @@
 
 - Ruling: Tasks 1 and 2 were implemented and tested together through real HTTP fixtures because provider capture is necessary to exercise storage without an artificial test interface. No product behavior changed from the approved design.
 - Backend regression failed first on missing cost accounting (`/tmp/mp-cost-red.log`); all C# checks now pass (`/tmp/mp-cost-green.log`, 272 parser checks plus stats/decision checks). Node regression failed 3/3 before implementation; the full frontend suite passes 37/37 (`/tmp/mp-cost-node.log`). Stats and preference browser checks pass against the isolated fixture.
+
+- Independent review found three edge cases. All were fixed: invalid optional UTF-16 metadata cannot override successful generation (`/tmp/mp-cost-metadata-red.log` → `/tmp/mp-cost-metadata-green.log`); decimal aggregate overflow preserves raw usage/counters with unavailable totals (`/tmp/mp-cost-overflow-red.log` → `/tmp/mp-cost-review-green.log`); large finite dollar estimates use compact/scientific notation (`/tmp/mp-cost-format-red.log` → `/tmp/mp-cost-node-final.log`, plus real responsive browser checks).
+- User refinement: hide provider/codename line and add copy icon after model display name. Regression failed on visible codename (`/tmp/mp-cost-copy-red.log`); clipboard API, keyboard, HTTP fallback, denial handling and 320/390/801/1440px checks passed (`/tmp/mp-cost-copy-green.log`).
+- Final review: all reported findings addressed; no deferred findings. Work remains on the local feature branch; no deployment or live data reset performed.

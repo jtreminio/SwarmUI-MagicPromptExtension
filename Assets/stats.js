@@ -1,6 +1,5 @@
 'use strict';
 
-const MP_STATS_PROVIDERS = { openrouter: 'OpenRouter', openaiapi: 'Local OpenAI API' };
 const MP_STATS_GROUPS = ['Starred', 'Unstarred', 'Blocked'];
 const MP_STATS_COLLAPSED_GROUPS_KEY = 'magicprompt_stats_collapsed_groups';
 const MP_STATS_SORTS = {
@@ -30,6 +29,8 @@ function mpStatsDollarDisplay(value) {
     if (value === null) return '—';
     if (value === Infinity) return 'Free';
     if (value > 0 && value < 1) return '<1';
+    if (value >= 1e12) return value.toLocaleString(undefined, { notation: 'scientific', maximumFractionDigits: 1 });
+    if (value >= 1e6) return value.toLocaleString(undefined, { notation: 'compact', maximumFractionDigits: 1 });
     return value.toLocaleString(undefined, { maximumFractionDigits: 0 });
 }
 
@@ -132,6 +133,28 @@ function mpStatsButton(action, text, label = text) {
     return button;
 }
 
+async function mpStatsCopyCodename(codename, button) {
+    if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(codename);
+        return;
+    }
+    // HTTP installations may not expose Clipboard API; keep fallback inside Bootstrap's focus trap.
+    const input = document.createElement('textarea');
+    input.value = codename;
+    input.style.position = 'fixed';
+    input.style.opacity = '0';
+    button.closest('.modal').append(input);
+    try {
+        input.focus();
+        input.select();
+        if (!document.execCommand('copy')) throw new Error('Clipboard access was denied.');
+    }
+    finally {
+        input.remove();
+        button.focus();
+    }
+}
+
 function mpStatsSelectableModels(select) {
     const selectable = new Set();
     if (!MP.settingsLoaded || !select) return selectable;
@@ -153,9 +176,13 @@ function mpStatsTableRow(model, confirm, busy, canUse) {
     const heading = document.createElement('th');
     heading.scope = 'row';
     heading.setAttribute('role', 'rowheader');
-    const provider = Object.hasOwn(MP_STATS_PROVIDERS, model.provider) ? MP_STATS_PROVIDERS[model.provider] : model.provider;
-    const identity = model.name === model.model ? provider : `${provider} · ${model.model}`;
-    heading.append(mpStatsElement('div', 'mp-stats-model', model.name), mpStatsElement('div', 'mp-stats-provider', identity));
+    const nameLine = mpStatsElement('div', 'mp-stats-name');
+    const copy = mpStatsButton('copy', '', `Copy codename for ${model.name}`);
+    copy.className = 'mp-stats-copy';
+    copy.title = `Copy ${model.model}`;
+    copy.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true" focusable="false"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></svg>';
+    nameLine.append(mpStatsElement('span', 'mp-stats-model', model.name), copy);
+    heading.append(nameLine);
     const latency = Number.isFinite(model.latency_ms) ? `${Math.round(model.latency_ms / 1000)} s` : '—';
     heading.append(mpStatsElement('div', 'mp-stats-latency', `Avg response: ${latency}`));
 
@@ -257,6 +284,7 @@ function mpCreateStats() {
     let confirmation = null;
     let readError = '';
     let actionError = '';
+    let actionNotice = '';
     let shown = false;
     let usedModel = false;
     const collapsedGroups = new Set();
@@ -272,7 +300,7 @@ function mpCreateStats() {
         status.classList.toggle('mp-status-error', !!(actionError || readError));
         status.textContent = actionError || readError || (busy === 'reset' ? 'Resetting stats…'
             : busy === 'preference' ? 'Saving model preferences…'
-                : loading ? 'Loading stats…' : loaded && !models.length ? 'No model stats yet.' : '');
+                : loading ? 'Loading stats…' : loaded && !models.length ? 'No model stats yet.' : actionNotice);
         refreshButton.setAttribute('aria-disabled', String(busy === 'reset'));
     }
 
@@ -360,7 +388,7 @@ function mpCreateStats() {
             if (id === requestId) enrich();
         }, () => {});
         loading = true;
-        readError = actionError = '';
+        readError = actionError = actionNotice = '';
         renderStatus();
         try {
             const data = await mpRequest('GetMagicPromptStats');
@@ -385,7 +413,18 @@ function mpCreateStats() {
         if (!button || busy) return;
         const model = rows.get(button.closest('tr').dataset.key);
         const action = button.dataset.action;
-        actionError = '';
+        actionError = actionNotice = '';
+        if (action === 'copy') {
+            try {
+                await mpStatsCopyCodename(model.model, button);
+                actionNotice = 'Copied model codename.';
+            }
+            catch (error) {
+                actionError = `Could not copy model codename: ${error.message}`;
+            }
+            renderStatus();
+            return;
+        }
         if (action === 'use') {
             const select = document.getElementById('input_mpmodelid');
             if (model.group === 2 || model.provider !== MP.settings.backend

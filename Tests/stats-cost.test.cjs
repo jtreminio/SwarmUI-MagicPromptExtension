@@ -37,6 +37,8 @@ test('unknown, free, no observed skips and tiny positive estimates stay distinct
     assert.equal(ctx.mpStatsDollarDisplay(0), '0');
     assert.equal(ctx.mpStatsDollarDisplay(0.25), '<1');
     assert.equal(ctx.mpStatsDollarDisplay(500), '500');
+    assert.equal(ctx.mpStatsDollarDisplay(1e6), '1M');
+    assert.equal(ctx.mpStatsDollarDisplay(1e28), '1E28');
 });
 
 test('cost and latency sorts keep unknowns last in both directions', () => {

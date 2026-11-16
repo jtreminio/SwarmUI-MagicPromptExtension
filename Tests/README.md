@@ -37,6 +37,7 @@ playwright-cli -s=magicprompt-tests run-code --filename=Tests/decision-picker-re
 playwright-cli -s=magicprompt-tests run-code --filename=Tests/decision-question-ui.browser.js
 playwright-cli -s=magicprompt-tests run-code --filename=Tests/stats-ui.browser.js
 playwright-cli -s=magicprompt-tests run-code --filename=Tests/stats-preferences-ui.browser.js
+playwright-cli -s=magicprompt-tests run-code --filename=Tests/stats-copy-ui.browser.js
 ```
 
 The fixture mocks all API calls and uses a separate browser origin. It does not load or change real user settings. Checks cover instruction creation/editing, cancel, failed saves and retries, model searches and preference exclusivity, Escape handling, repeated modal cycles, prompt history actions and keyboard activation, and mobile overflow. The C# checks also cover provider migration and supported request schemas.
@@ -56,3 +57,5 @@ Picker review checks cover keyboard model selection and default recovery, visibl
 Stats browser checks cover catalog ordering and independent loading, both Skip If windows and sort directions, unavailable versus zero metrics, prompt preference persistence and failures, reset permission and stale refreshes, keyboard focus, and narrow-screen layout.
 
 Cost checks also cover raw usage precision, missing/invalid/free charges, historical compatibility, known-cost response and Skip If cohorts, billed parser failures, concurrent usage, cache reuse, and reset races. Frontend checks verify prompts per dollar, unknown/free/zero displays, cost and response-time sorts, latency placement, and responsive Stats layout. All provider responses are offline fixtures; no paid inference is used.
+
+Stats copy checks exercise the real clipboard, keyboard activation, the HTTP fallback inside the modal focus trap, clipboard denial, and very large finite estimates at mobile and desktop widths. Accounting regressions cover invalid optional UTF-16 metadata and decimal aggregate overflow without losing successful requests or raw usage.

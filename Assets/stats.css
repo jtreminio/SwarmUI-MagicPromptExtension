@@ -18,7 +18,12 @@
 .mp-stats .mp-stats-group-toggle::before { content: ""; width: .45rem; height: .45rem; border-right: 2px solid; border-bottom: 2px solid; transform: rotate(-45deg); }
 .mp-stats .mp-stats-group-toggle[aria-expanded="true"]::before { transform: rotate(45deg); }
 .mp-stats .mp-stats-model { font-weight: 600; }
-.mp-stats .mp-stats-provider { margin-top: .125rem; color: var(--text-soft, var(--text)); font-weight: 400; font-size: .8rem; }
+.mp-stats .mp-stats-name { display: flex; align-items: center; gap: .25rem; }
+.mp-stats .mp-stats-model { min-width: 0; }
+.mp-stats .mp-stats-copy { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 28px; height: 28px; padding: .25rem; border: 0; border-radius: .25rem; background: transparent; color: var(--text-soft, var(--text)); cursor: pointer; }
+.mp-stats .mp-stats-copy svg { width: 15px; height: 15px; }
+.mp-stats .mp-stats-copy:hover { background: color-mix(in srgb, var(--text) 10%, transparent); color: var(--text); }
+.mp-stats .mp-stats-copy:focus-visible { outline: 2px solid var(--text); outline-offset: 1px; }
 .mp-stats .mp-stats-latency { margin-top: .2rem; color: var(--text-soft, var(--text)); font-weight: 400; font-size: .77rem; font-variant-numeric: tabular-nums; }
 .mp-stats .mp-stats-cost { display: grid; gap: .2rem; min-width: 8rem; }
 .mp-stats .mp-stats-dollar-line { display: grid; grid-template-columns: auto minmax(3rem, max-content); align-items: baseline; gap: .65rem; }
